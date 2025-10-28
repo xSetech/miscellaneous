@@ -1,0 +1,7 @@
+BasedOnStyle: LLVM
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignTrailingComments: true
+ColumnLimit: 100
+SortIncludes: false
+
