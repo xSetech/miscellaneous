@@ -1,5 +1,6 @@
 .DS_Store
 [._]*.s[a-v][a-z]
+[._]*.sw?
 !*.svg
 [._]*.un~
 __pycache__/
