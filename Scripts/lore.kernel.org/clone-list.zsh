@@ -72,35 +72,47 @@ MIRROR_EPOCHS=()
 MIRROR_URLS=()
 
 # Color codes for output
-if [[ -t 1 ]]; then
-    readonly RED='\033[0;31m'
-    readonly YELLOW='\033[1;33m'
-    readonly GREEN='\033[0;32m'
-    readonly BLUE='\033[0;34m'
-    readonly NC='\033[0m' # No Color
-else
+# Respect NO_COLOR environment variable: https://no-color.org/
+if [[ -n "${NO_COLOR:-}" ]] || [[ ! -t 1 ]]; then
     readonly RED=''
     readonly YELLOW=''
     readonly GREEN=''
-    readonly BLUE=''
+    readonly CYAN=''
     readonly NC=''
+    readonly BOLD_RED=''
+    readonly BOLD_YELLOW=''
+    readonly BOLD_CYAN=''
+else
+    readonly RED='\033[0;31m'
+    readonly YELLOW='\033[1;33m'
+    readonly GREEN='\033[0;32m'
+    readonly CYAN='\033[0;36m'
+    readonly NC='\033[0m' # No Color
+    readonly BOLD_RED='\033[1;31m'
+    readonly BOLD_YELLOW='\033[1;33m'
+    readonly BOLD_CYAN='\033[1;36m'
 fi
 
 # Print functions
 print_error() {
-    print -r -- "${RED}ERROR:${NC} $*" >&2
+    printf "${BOLD_RED}ERROR:${NC} %s\n" "$*" >&2
 }
 
 print_warning() {
-    print -r -- "${YELLOW}WARNING:${NC} $*" >&2
+    printf "${BOLD_YELLOW}WARNING:${NC} %s\n" "$*" >&2
 }
 
 print_info() {
-    print -r -- "${BLUE}INFO:${NC} $*"
+    printf "${BOLD_CYAN}INFO:${NC} %s\n" "$*"
 }
 
 print_success() {
-    print -r -- "${GREEN}SUCCESS:${NC} $*"
+    printf "${GREEN}SUCCESS:${NC} %s\n" "$*"
+}
+
+# For printing formatted strings that may contain color codes
+print_fmt() {
+    printf "%b\n" "$*"
 }
 
 # Show usage information
@@ -164,7 +176,7 @@ should_keep_clone() {
 
 # Display configuration for all epochs
 show_configuration() {
-    print_info "Configuration for list: ${BLUE}${list_name}${NC}\n"
+    print_fmt "${BOLD_CYAN}INFO:${NC} Configuration for list: ${CYAN}${list_name}${NC}"
 
     local -a all_remotes
     all_remotes=(${(f)"$(git remote 2>/dev/null || true)"})
@@ -184,10 +196,10 @@ show_configuration() {
                 if [[ -n "$mode" ]]; then
                     case "$mode" in
                         local)
-                            print "  Mode: ${YELLOW}local-only${NC} (keeps local clone, no upstream URL)"
+                            printf "  Mode: ${YELLOW}local-only${NC} (keeps local clone, no upstream URL)\n"
                             ;;
                         mirror)
-                            print "  Mode: ${CYAN}mirror${NC} (uses alternative URL)"
+                            printf "  Mode: ${CYAN}mirror${NC} (uses alternative URL)\n"
                             if [[ -n "$mirror_url" ]]; then
                                 print "  Mirror URL: ${mirror_url}"
                             fi
@@ -206,7 +218,7 @@ show_configuration() {
         print_info "No special configuration found. All epochs use default behavior."
     fi
 
-    print_info "\nConfiguration is stored in git config (remote.eN.clone-list-*)"
+    print_info "Configuration is stored in git config (remote.eN.clone-list-*)"
     print_info "Use --set-local or --set-mirror to configure epochs"
 }
 
@@ -338,7 +350,7 @@ main() {
 
     parse_args "$@"
 
-    print_info "Cloning email list: ${BLUE}${list_name}${NC}"
+    print_fmt "${BOLD_CYAN}INFO:${NC} Cloning email list: ${CYAN}${list_name}${NC}"
     print_info "Using URL prefix: ${LIST_PREFIX}"
 
     # Create or enter the list directory
@@ -359,8 +371,12 @@ main() {
 
     # Check git repository state
     if git rev-parse --git-dir &>/dev/null; then
-        local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-        if [[ "$current_branch" != "main" ]]; then
+        local current_branch=$(git branch --show-current 2>/dev/null)
+        if [[ -z "$current_branch" ]]; then
+            print_error "Repository is in detached HEAD state"
+            print_error "Please checkout the 'main' branch first: git checkout main"
+            exit 1
+        elif [[ "$current_branch" != "main" ]]; then
             print_error "Existing repository is on branch '$current_branch', not 'main'"
             print_error "This script requires the repository to be on the 'main' branch"
             exit 1
@@ -382,21 +398,21 @@ main() {
 
     # Apply configuration changes from command line
     if (( ${#LOCAL_EPOCHS} > 0 )); then
-        print_info "\nApplying local-only configuration..."
+        print_info "Applying local-only configuration..."
         for epoch in "${LOCAL_EPOCHS[@]}"; do
             set_epoch_mode "$epoch" "local"
-            print_success "Epoch ${epoch} marked as local-only"
+            print_info "Epoch ${epoch} marked as local-only"
         done
     fi
 
     if (( ${#MIRROR_EPOCHS} > 0 )); then
-        print_info "\nApplying mirror configuration..."
+        print_info "Applying mirror configuration..."
         for i in {1..${#MIRROR_EPOCHS}}; do
             local epoch="${MIRROR_EPOCHS[$i]}"
             local url="${MIRROR_URLS[$i]}"
             set_epoch_mode "$epoch" "mirror"
             set_epoch_mirror_url "$epoch" "$url"
-            print_success "Epoch ${epoch} configured with mirror: ${url}"
+            print_info "Epoch ${epoch} configured with mirror: ${url}"
         done
     fi
 
@@ -417,7 +433,7 @@ main() {
     done
 
     if [[ "$has_config" == true ]]; then
-        print_info "\n${YELLOW}⚙${NC}  Special configuration detected:"
+        print_fmt "${YELLOW}⚙${NC}  Special configuration detected:"
         for remote in "${all_remotes[@]}"; do
             if [[ "$remote" =~ ^e([0-9]+)$ ]]; then
                 local epoch=${match[1]}
@@ -425,17 +441,17 @@ main() {
                 local mirror_url=$(get_epoch_mirror_url "$epoch")
 
                 if [[ "$mode" == "local" ]]; then
-                    print_info "  Epoch ${epoch}: ${YELLOW}local-only${NC} (will keep clone)"
+                    print_fmt "  Epoch ${epoch}: ${YELLOW}local-only${NC} (will keep clone)"
                 elif [[ "$mode" == "mirror" && -n "$mirror_url" ]]; then
-                    print_info "  Epoch ${epoch}: ${CYAN}mirror${NC} -> ${mirror_url}"
+                    print_fmt "  Epoch ${epoch}: ${CYAN}mirror${NC} -> ${mirror_url}"
                 fi
             fi
         done
-        print_info "  (Use --show-config to see full configuration)\n"
+        print_info "  (Use --show-config to see full configuration)"
     fi
 
     if [[ "$KEEP_CLONES" == true ]]; then
-        print_info "${YELLOW}⚙${NC}  --keep-clones: All local clones will be preserved\n"
+        print_fmt "${YELLOW}⚙${NC}  --keep-clones: All local clones will be preserved"
     fi
 
     # Discover valid epoch repositories
@@ -463,11 +479,11 @@ main() {
         exit 1
     fi
 
-    print_success "Found ${#valid_epochs} epoch repositories:"
+    print_info "Found ${#valid_epochs} epoch repositories:"
     for i in "${valid_epochs[@]}"; do
         local url="${list_repo_prefix}${i}"
         if should_skip_epoch "$i"; then
-            print "  [$i] $url ${YELLOW}(will skip)${NC}"
+            printf "  [%s] %s ${YELLOW}(will skip)${NC}\n" "$i" "$url"
         else
             print "  [$i] $url"
         fi
@@ -487,13 +503,12 @@ main() {
     fi
 
     # Confirm before proceeding
-    if ! confirm "\nProceed with cloning ${#epochs_to_clone} epoch repositories?"; then
+    if ! confirm "Proceed with cloning ${#epochs_to_clone} epoch repositories?"; then
         print_info "Aborted by user"
         exit 0
     fi
 
     # Clone epoch repositories
-    print_info "\nCloning epoch repositories..."
     local -a clones_needed
     local -a existing_remotes
 
@@ -524,18 +539,21 @@ main() {
 
     # Perform clones
     if (( ${#clones_needed} > 0 )); then
-        print_info "Need to clone ${#clones_needed} repositories"
+        local plural="repositories"
+        if (( ${#clones_needed} == 1 )); then
+            plural="repository"
+        fi
+        print_info "Cloning ${#clones_needed} epoch ${plural}..."
 
         for epoch in "${clones_needed[@]}"; do
             local clone_url="${list_repo_prefix}${epoch}"
             local clone_dir="../${list_name}.${epoch}.git"
 
-            print_info "\nCloning epoch $epoch from $clone_url"
+            print_info "Cloning epoch $epoch from $clone_url"
             print_info "Destination: $clone_dir"
 
             while true; do
                 if git clone "$clone_url" "$clone_dir"; then
-                    print_success "Epoch $epoch cloned successfully"
                     break
                 else
                     print_error "Failed to clone epoch $epoch"
@@ -571,7 +589,7 @@ main() {
     fi
 
     # Add remotes pointing to local clones
-    print_info "\nConfiguring remotes in local repository..."
+    print_info "Configuring remotes in local repository..."
     for epoch in "${epochs_to_clone[@]}"; do
         local remote_name="e${epoch}"
         local clone_dir="../${list_name}.${epoch}.git"
@@ -594,16 +612,14 @@ main() {
     done
 
     # Fetch from all remotes
-    print_info "\nFetching from all remotes (using $JOBS parallel jobs)..."
-    if git fetch --all --jobs="$JOBS"; then
-        print_success "Fetch completed successfully"
-    else
+    print_info "Fetching from all remotes (using $JOBS parallel jobs)..."
+    if ! git fetch --all --jobs="$JOBS"; then
         print_error "Fetch failed"
         exit 1
     fi
 
     # Repoint remotes to upstream URLs
-    print_info "\nRepointing remotes to upstream URLs..."
+    print_info "Repointing remotes to upstream URLs..."
     local -a remotes_to_update
 
     for epoch in "${epochs_to_clone[@]}"; do
@@ -622,7 +638,7 @@ main() {
         # Handle local-only epochs
         if [[ "$mode" == "local" ]]; then
             if [[ "$current_url" =~ ^\.\./ ]]; then
-                print_info "Remote '$remote_name' kept as ${YELLOW}local-only${NC}: $current_url"
+                print_fmt "${BOLD_CYAN}INFO:${NC} Remote '$remote_name' kept as ${YELLOW}local-only${NC}: $current_url"
             else
                 print_warning "Remote '$remote_name' is marked local-only but points to: $current_url"
             fi
@@ -637,9 +653,9 @@ main() {
             fi
 
             if [[ "$current_url" == "$mirror_url" ]]; then
-                print_info "Remote '$remote_name' already points to ${CYAN}mirror${NC}"
+                print_fmt "${BOLD_CYAN}INFO:${NC} Remote '$remote_name' already points to ${CYAN}mirror${NC}"
             else
-                print_info "Updating remote '$remote_name' to ${CYAN}mirror${NC}: $mirror_url"
+                print_fmt "${BOLD_CYAN}INFO:${NC} Updating remote '$remote_name' to ${CYAN}mirror${NC}: $mirror_url"
                 git remote set-url "$remote_name" "$mirror_url" || {
                     print_error "Failed to update remote '$remote_name'"
                     exit 1
@@ -664,17 +680,15 @@ main() {
 
     # Verify upstream remotes work
     if (( ${#remotes_to_update} > 0 )); then
-        print_info "\nVerifying upstream remotes..."
-        if git fetch --all --jobs="$JOBS" --dry-run; then
-            print_success "All upstream remotes verified"
-        else
+        print_info "Verifying upstream remotes..."
+        if ! git fetch --all --jobs="$JOBS" --dry-run; then
             print_error "Failed to verify upstream remotes"
             exit 1
         fi
     fi
 
     # Clean up local clones
-    print_info "\nCleaning up local clone directories..."
+    print_info "Cleaning up local clone directories..."
 
     # Determine which clones should be kept
     local -a clones_to_keep
@@ -706,7 +720,11 @@ main() {
     if (( ${#clones_to_delete} == 0 )); then
         print_info "No local clones to delete"
     else
-        if confirm "Delete ${#clones_to_delete} local clone director(y|ies)?"; then
+        local dir_word="directory"
+        if (( ${#clones_to_delete} > 1 )); then
+            dir_word="directories"
+        fi
+        if confirm "Delete ${#clones_to_delete} local clone ${dir_word}?"; then
             for epoch in "${clones_to_delete[@]}"; do
                 local clone_dir="../${list_name}.${epoch}.git"
                 print_info "Removing $clone_dir"
@@ -714,13 +732,12 @@ main() {
                     print_warning "Failed to remove $clone_dir"
                 }
             done
-            print_success "Cleanup completed"
         else
             print_info "Keeping all local clone directories"
         fi
     fi
 
-    print_success "\n✓ Email list '$list_name' successfully cloned and configured!"
+    print_info "✓ Email list '${list_name}' successfully cloned and configured!"
     print_info "Repository location: $(pwd)"
     print_info "Total remotes configured: ${#epochs_to_clone}"
 }

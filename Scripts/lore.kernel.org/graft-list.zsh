@@ -50,41 +50,51 @@ OVERWRITE=false
 DRY_RUN=false
 
 # Color codes for output
-if [[ -t 1 ]]; then
-    readonly RED='\033[0;31m'
-    readonly YELLOW='\033[1;33m'
-    readonly GREEN='\033[0;32m'
-    readonly BLUE='\033[0;34m'
-    readonly CYAN='\033[0;36m'
-    readonly NC='\033[0m' # No Color
-else
+# Respect NO_COLOR environment variable: https://no-color.org/
+if [[ -n "${NO_COLOR:-}" ]] || [[ ! -t 1 ]]; then
     readonly RED=''
     readonly YELLOW=''
     readonly GREEN=''
-    readonly BLUE=''
     readonly CYAN=''
     readonly NC=''
+    readonly BOLD_RED=''
+    readonly BOLD_YELLOW=''
+    readonly BOLD_CYAN=''
+else
+    readonly RED='\033[0;31m'
+    readonly YELLOW='\033[1;33m'
+    readonly GREEN='\033[0;32m'
+    readonly CYAN='\033[0;36m'
+    readonly NC='\033[0m' # No Color
+    readonly BOLD_RED='\033[1;31m'
+    readonly BOLD_YELLOW='\033[1;33m'
+    readonly BOLD_CYAN='\033[1;36m'
 fi
 
 # Print functions
 print_error() {
-    print -r -- "${RED}ERROR:${NC} $*" >&2
+    printf "${BOLD_RED}ERROR:${NC} %s\n" "$*" >&2
 }
 
 print_warning() {
-    print -r -- "${YELLOW}WARNING:${NC} $*" >&2
+    printf "${BOLD_YELLOW}WARNING:${NC} %s\n" "$*" >&2
 }
 
 print_info() {
-    print -r -- "${BLUE}INFO:${NC} $*"
+    printf "${BOLD_CYAN}INFO:${NC} %s\n" "$*"
 }
 
 print_success() {
-    print -r -- "${GREEN}SUCCESS:${NC} $*"
+    printf "${GREEN}SUCCESS:${NC} %s\n" "$*"
 }
 
 print_step() {
-    print -r -- "${CYAN}==>${NC} $*"
+    printf "${CYAN}==>${NC} %s\n" "$*"
+}
+
+# For printing formatted strings that may contain color codes
+print_fmt() {
+    printf "%b\n" "$*"
 }
 
 # Show usage information
@@ -133,7 +143,7 @@ check_epoch_configuration() {
     done
 
     if [[ "$has_config" == true ]]; then
-        print_warning "\n⚙  Special epoch configuration detected:"
+        print_warning "⚙  Special epoch configuration detected:"
 
         if (( ${#local_epochs} > 0 )); then
             print_warning "  Local-only epochs: ${local_epochs[*]}"
@@ -285,7 +295,7 @@ main() {
     parse_args "$@"
     check_prerequisites
 
-    print_step "Grafting email list epochs: ${BLUE}${list_name}${NC}"
+    print_fmt "${CYAN}==>${NC} Grafting email list epochs: ${CYAN}${list_name}${NC}"
 
     # Check if directory exists and is a git repository
     if [[ ! -d "$list_name" ]]; then
@@ -326,28 +336,28 @@ main() {
     local last_epoch=${epoch_numbers[-1]}
     local num_epochs=${#epoch_numbers}
 
-    print_success "Found ${num_epochs} epoch remotes: e${first_epoch} through e${last_epoch}"
+    print_info "Found ${num_epochs} epoch remotes: e${first_epoch} through e${last_epoch}"
 
     # Check for and display any special configuration
     check_epoch_configuration "${epoch_numbers[@]}"
 
     if [[ "$DRY_RUN" == true ]]; then
-        print_info "\n${CYAN}DRY RUN MODE${NC} - showing what would be done:\n"
+        print_fmt "${CYAN}DRY RUN MODE${NC} - showing what would be done:"
         print_info "1. Clean up any existing 'combined' branch and git replacements"
-        print_info "2. Start with epoch e${first_epoch} as the base"
+        print_fmt "${BOLD_CYAN}INFO:${NC} 2. Start with epoch e${first_epoch} as the base"
 
         for (( i=first_epoch+1; i<=last_epoch; i++ )); do
-            print_info "3. Graft epoch e${i} root onto e$((i-1)) tip"
+            print_fmt "${BOLD_CYAN}INFO:${NC} 3. Graft epoch e${i} root onto e$((i-1)) tip"
         done
 
         print_info "4. Create 'combined' branch at e${last_epoch} tip"
         print_info "5. Rewrite history with git-filter-repo"
-        print_info "\nNo changes made. Remove --dry-run to execute."
+        print_info "No changes made. Remove --dry-run to execute."
         exit 0
     fi
 
     # Confirm before proceeding
-    print_info "\nThis will create a 'combined' branch by grafting ${num_epochs} epochs together."
+    print_info "This will create a 'combined' branch by grafting ${num_epochs} epochs together."
     print_warning "This operation rewrites git history and may take several minutes."
 
     if ! confirm "Proceed with grafting?"; then
@@ -410,9 +420,6 @@ main() {
     print_step "Creating 'combined' branch..."
     git branch -f combined "$prev_tip"
 
-    local total_commits=$(git rev-list --count combined)
-    print_success "Combined branch created with ${total_commits} commits (before rewrite)"
-
     # Make replacements permanent with git-filter-repo
     print_step "Rewriting history to make grafts permanent..."
     print_warning "This may take several minutes depending on repository size..."
@@ -435,17 +442,11 @@ main() {
 
     # Final statistics
     local final_commits=$(git rev-list --count combined)
-    print_success "\n✓ Grafting complete!"
+    print_info "✓ Grafting complete!"
     print_info "Repository: $(pwd)"
     print_info "Branch: combined"
     print_info "Total commits: ${final_commits}"
     print_info "Epochs grafted: e${first_epoch} through e${last_epoch} (${num_epochs} total)"
-
-    print_info "\nTo explore the grafted history:"
-    print_info "  ${CYAN}cd ${list_name}${NC}"
-    print_info "  ${CYAN}git log combined${NC}"
-    print_info "  ${CYAN}git log --grep='search term' combined${NC}"
-    print_info "  ${CYAN}git log --all --oneline --graph${NC}"
 }
 
 # Run main function with all arguments
