@@ -102,6 +102,56 @@ confirm() {
     [[ "$response" =~ ^[Yy]$ ]]
 }
 
+# Get the mode for an epoch from git config
+get_epoch_mode() {
+    local epoch="$1"
+    git config --get "remote.e${epoch}.clone-list-mode" 2>/dev/null || echo ""
+}
+
+# Get the mirror URL for an epoch from git config
+get_epoch_mirror_url() {
+    local epoch="$1"
+    git config --get "remote.e${epoch}.clone-list-mirror-url" 2>/dev/null || echo ""
+}
+
+# Check for and display any epoch configuration
+check_epoch_configuration() {
+    local -a epoch_numbers=("$@")
+    local has_config=false
+    local -a local_epochs
+    local -a mirror_epochs
+
+    for epoch in "${epoch_numbers[@]}"; do
+        local mode=$(get_epoch_mode "$epoch")
+        if [[ "$mode" == "local" ]]; then
+            has_config=true
+            local_epochs+=($epoch)
+        elif [[ "$mode" == "mirror" ]]; then
+            has_config=true
+            mirror_epochs+=($epoch)
+        fi
+    done
+
+    if [[ "$has_config" == true ]]; then
+        print_warning "\n⚙  Special epoch configuration detected:"
+
+        if (( ${#local_epochs} > 0 )); then
+            print_warning "  Local-only epochs: ${local_epochs[*]}"
+            print_info "    These epochs use local clones and may not be up-to-date with upstream"
+        fi
+
+        if (( ${#mirror_epochs} > 0 )); then
+            print_info "  Mirror epochs: ${mirror_epochs[*]}"
+            for epoch in "${mirror_epochs[@]}"; do
+                local mirror_url=$(get_epoch_mirror_url "$epoch")
+                print_info "    e${epoch}: ${mirror_url}"
+            done
+        fi
+
+        print_info ""
+    fi
+}
+
 # Check if git-filter-repo is available
 check_prerequisites() {
     if ! command -v git-filter-repo &>/dev/null; then
@@ -278,6 +328,9 @@ main() {
 
     print_success "Found ${num_epochs} epoch remotes: e${first_epoch} through e${last_epoch}"
 
+    # Check for and display any special configuration
+    check_epoch_configuration "${epoch_numbers[@]}"
+
     if [[ "$DRY_RUN" == true ]]; then
         print_info "\n${CYAN}DRY RUN MODE${NC} - showing what would be done:\n"
         print_info "1. Clean up any existing 'combined' branch and git replacements"
@@ -397,4 +450,3 @@ main() {
 
 # Run main function with all arguments
 main "$@"
-
