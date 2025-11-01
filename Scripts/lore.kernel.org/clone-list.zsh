@@ -55,6 +55,9 @@ set -e
 setopt LOCAL_OPTIONS
 setopt EXTENDED_GLOB
 
+# Save script path (in zsh functions, $0 becomes the function name)
+readonly SCRIPT_PATH="${0:A}"
+
 # Constants
 readonly LIST_PREFIX_DEFAULT="https://lore.kernel.org/"
 readonly MAX_EPOCH_DEFAULT=32
@@ -117,8 +120,7 @@ print_fmt() {
 
 # Show usage information
 show_usage() {
-    sed -n '/^# DESCRIPTION:/,/^$/p' "$0" | sed 's/^# \?//'
-    sed -n '/^# USAGE:/,/^# MORE INFO:/p' "$0" | sed 's/^# \?//'
+    sed -n '/^# DESCRIPTION:/,/^$/p' "$SCRIPT_PATH" | sed 's/^# \?//'
 }
 
 # Prompt user for confirmation
