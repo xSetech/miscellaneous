@@ -435,7 +435,7 @@ main() {
     done
 
     if [[ "$has_config" == true ]]; then
-        print_fmt "${YELLOW}⚙${NC}  Special configuration detected:"
+        print_fmt "${YELLOW}⚙${NC} Special configuration detected:"
         for remote in "${all_remotes[@]}"; do
             if [[ "$remote" =~ ^e([0-9]+)$ ]]; then
                 local epoch=${match[1]}
@@ -603,7 +603,17 @@ main() {
 
         if git remote get-url "$remote_name" &>/dev/null; then
             local current_url=$(git remote get-url "$remote_name")
-            print_info "Remote '$remote_name' already exists: $current_url"
+            # Check if the URL is valid (not just the remote name)
+            if [[ "$current_url" == "$remote_name" ]] || [[ ! "$current_url" =~ ^(\.\.?/|/|https?://) ]]; then
+                # Invalid/placeholder URL - update it
+                print_info "Updating remote '$remote_name' (invalid URL: $current_url) -> $clone_dir"
+                git remote set-url "$remote_name" "$clone_dir" || {
+                    print_error "Failed to update remote '$remote_name'"
+                    exit 1
+                }
+            else
+                print_info "Remote '$remote_name' already exists: $current_url"
+            fi
         else
             print_info "Adding remote '$remote_name' -> $clone_dir"
             git remote add "$remote_name" "$clone_dir" || {
