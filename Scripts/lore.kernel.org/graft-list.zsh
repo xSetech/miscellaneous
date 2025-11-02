@@ -20,6 +20,7 @@
 # OPTIONS:
 #   --overwrite          Overwrite existing 'combined' branch
 #   --dry-run            Show what would be done without making changes
+#   --yes                Skip interactive confirmation (assume "yes")
 #   -h, --help           Show this help message
 #
 # EXAMPLES:
@@ -51,6 +52,7 @@ readonly SCRIPT_PATH="${0:A}"
 # Configuration variables
 OVERWRITE=false
 DRY_RUN=false
+YES=false
 
 # Color codes for output
 # Respect NO_COLOR environment variable: https://no-color.org/
@@ -186,6 +188,10 @@ parse_args() {
                 DRY_RUN=true
                 shift
                 ;;
+            --yes)
+                YES=true
+                shift
+                ;;
             -h|--help)
                 show_usage
                 exit 0
@@ -272,6 +278,11 @@ discover_epoch_remotes() {
 }
 
 # Get the main branch for a remote
+# Returns the branch name on success, returns 1 on failure
+# IMPORTANT: This function is called in command substitution, so:
+# - Only the final print statement should go to stdout
+# - Error messages must go to stderr or be handled by the caller
+# - 'exit' will only exit the subshell, not the main script
 get_remote_branch() {
     local remote="$1"
     local branch
@@ -281,13 +292,36 @@ get_remote_branch() {
              | grep -v "^${remote}/HEAD$" | head -n1)
 
     if [[ -z "$branch" ]]; then
-        print_error "No branch found for remote '$remote'"
-        print_info "Available refs for ${remote}:"
-        git for-each-ref --format='  %(refname:short)' "refs/remotes/${remote}/"
-        exit 1
+        # Return error status - caller will handle the error message
+        return 1
     fi
 
+    # Output only the branch name to stdout
     print -r -- "$branch"
+    return 0
+}
+
+# Attempt to fix a remote that has no tracking branches
+fix_remote_tracking() {
+    local remote="$1"
+
+    print_warning "Remote '${remote}' has no tracking branches. Attempting to fix..."
+
+    # Try fetching with explicit refspec
+    if git fetch "$remote" '+refs/heads/*:refs/remotes/'"${remote}"'/*' 2>/dev/null; then
+        print_info "Successfully fetched tracking branches for '${remote}'"
+
+        # Verify it worked
+        local branch
+        branch=$(git for-each-ref --format='%(refname:short)' "refs/remotes/${remote}/" \
+                 | grep -v "^${remote}/HEAD$" | head -n1)
+
+        if [[ -n "$branch" ]]; then
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 # Main script
@@ -358,13 +392,17 @@ main() {
         exit 0
     fi
 
-    # Confirm before proceeding
+    # Confirm before proceeding (skip if --yes)
     print_info "This will create a 'combined' branch by grafting ${num_epochs} epochs together."
     print_warning "This operation rewrites git history and may take several minutes."
 
-    if ! confirm "Proceed with grafting?"; then
-        print_info "Aborted by user"
-        exit 0
+    if [[ "$YES" == false ]]; then
+        if ! confirm "Proceed with grafting?"; then
+            print_info "Aborted by user"
+            exit 0
+        fi
+    else
+        print_info "Auto-confirmed by --yes"
     fi
 
     # Clean up from any previous runs
@@ -396,7 +434,27 @@ main() {
 
     # Get the first epoch's branch and tip
     local first_remote="e${first_epoch}"
-    local first_branch=$(get_remote_branch "$first_remote")
+    local first_branch
+
+    if ! first_branch=$(get_remote_branch "$first_remote"); then
+        print_error "No branch found for remote '${first_remote}'"
+        print_info "Available refs for ${first_remote}:"
+        git for-each-ref --format='  %(refname:short)' "refs/remotes/${first_remote}/" >&2
+        print_info ""
+
+        # Try to fix it
+        if fix_remote_tracking "$first_remote"; then
+            if ! first_branch=$(get_remote_branch "$first_remote"); then
+                print_error "Still cannot find branch for '${first_remote}' after fix attempt"
+                exit 1
+            fi
+        else
+            print_error "Failed to fix remote tracking for '${first_remote}'"
+            print_info "Try running: git fetch ${first_remote} +refs/heads/*:refs/remotes/${first_remote}/*"
+            exit 1
+        fi
+    fi
+
     local prev_tip=$(git rev-parse "$first_branch")
 
     print_info "Starting with epoch ${first_epoch}: ${first_branch} (${prev_tip:0:12})"
@@ -404,7 +462,26 @@ main() {
     # Graft each subsequent epoch
     for (( i=first_epoch+1; i<=last_epoch; i++ )); do
         local remote="e${i}"
-        local branch=$(get_remote_branch "$remote")
+        local branch
+
+        if ! branch=$(get_remote_branch "$remote"); then
+            print_error "No branch found for remote '${remote}'"
+            print_info "Available refs for ${remote}:"
+            git for-each-ref --format='  %(refname:short)' "refs/remotes/${remote}/" >&2
+            print_info ""
+
+            # Try to fix it
+            if fix_remote_tracking "$remote"; then
+                if ! branch=$(get_remote_branch "$remote"); then
+                    print_error "Still cannot find branch for '${remote}' after fix attempt"
+                    exit 1
+                fi
+            else
+                print_error "Failed to fix remote tracking for '${remote}'"
+                exit 1
+            fi
+        fi
+
         local tip=$(git rev-parse "$branch")
         local root=$(git rev-list --max-parents=0 "$branch")
 
