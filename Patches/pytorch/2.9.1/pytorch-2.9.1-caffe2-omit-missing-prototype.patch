@@ -1,0 +1,36 @@
+commit 2eb3c0bb4055d8c9e7ff1d159a64f10e30f4f74f (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Mon Feb 16 11:06:50 2026 -0800
+
+    Fix -Wmissing-prototypes suppression for generated files with symlinked source dirs
+    
+    The per-file suppression of -Werror=missing-prototypes for generated
+    files in the build directory was failing when the source tree was
+    accessed through a symlink. The loop at line 817 resolves each source
+    file to its real path via REALPATH, but then compares it against the
+    unresolved CMAKE_BINARY_DIR. When these diverge (e.g. ~/Src is a
+    symlink to /Volumes/Workbench/Src), string(FIND) never matches and
+    the -Wno-error=missing-prototypes flag is never applied, causing
+    build failures on generated files like RegisterFunctionalization_*.cpp.
+    
+    Resolve CMAKE_BINARY_DIR to its real path before the comparison so
+    both sides use canonical paths.
+    
+    Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/caffe2/CMakeLists.txt b/caffe2/CMakeLists.txt
+index 6ab41b6c847..1eae0030904 100644
+--- a/caffe2/CMakeLists.txt
++++ b/caffe2/CMakeLists.txt
+@@ -813,9 +813,10 @@ if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" AND NOT USE_IOS AND NOT USE_COREML
+   foreach(generated_file IN LISTS GENERATED_CXX_TORCH)
+     set_source_files_properties(${generated_file} PROPERTIES COMPILE_OPTIONS "-Wno-missing-prototypes;-Wno-error=missing-prototypes")
+   endforeach()
++  get_filename_component(_REAL_BINARY_DIR "${CMAKE_BINARY_DIR}" REALPATH)
+   foreach(source_file IN LISTS TORCH_CPU_SOURCES)
+     get_filename_component(source_file "${source_file}" REALPATH)
+-    string(FIND "${source_file}" "${CMAKE_BINARY_DIR}" res)
++    string(FIND "${source_file}" "${_REAL_BINARY_DIR}" res)
+     if(res GREATER -1)
+       set_source_files_properties(${source_file} PROPERTIES COMPILE_OPTIONS "-Wno-missing-prototypes;-Wno-error=missing-prototypes")
+       continue()
