@@ -5,17 +5,24 @@ Ninja Build File Modifier
 Appends additional link libraries to specific targets in a Ninja build file.
 
 Usage:
-    # CLI usage
-    python ninja_link_modifier.py build.ninja --targets bin/foo lib/bar \
-                                              --libs -lm -lpthread
+    # CLI — flags can appear in any order
+    python ninja-edit.py build.ninja --targets bin/foo lib/bar \
+                                     --libs -lm -lpthread
 
     # With a targets file (one target per line)
-    python ninja_link_modifier.py build.ninja --targets-file targets.txt \
-                                              --libs -lm -lpthread
+    python ninja-edit.py build.ninja --targets-file targets.txt \
+                                     --libs -lm -lpthread
+
+    # --libs works with full paths too
+    python ninja-edit.py build.ninja --targets bin/foo \
+                                     --libs /opt/llvm/lib/libc++.a /opt/llvm/lib/libc++abi.a
 
     # Dry-run mode (preview changes without writing)
-    python ninja_link_modifier.py build.ninja --targets bin/foo \
-                                              --libs -lm --dry-run
+    python ninja-edit.py build.ninja --targets bin/foo --libs -lm --dry-run
+
+    # Process substitution for the targets file
+    python ninja-edit.py --targets-file <(grep -v lib targets.txt) \
+                         --libs /path/to/libc++.a --dry-run -v build.ninja
 
     # Programmatic usage
     from ninja_link_modifier import modify_ninja_build
@@ -223,9 +230,60 @@ def modify_ninja_build(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+
+# We split --libs out manually before argparse sees the argv.  This is the
+# simplest way to allow arbitrary values (including those starting with "-")
+# in any argument position without REMAINDER swallowing positional args or
+# other flags.
+
+
+def _split_libs(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Extract ``--libs`` values from *argv*, returning (rest, libs).
+
+    Everything between ``--libs`` and the next recognised ``--flag`` (or end
+    of argv) is treated as a library value, regardless of whether it starts
+    with a dash.  Recognised flags that terminate the libs list:
+    ``--targets``, ``--targets-file``, ``--dry-run``, ``--no-backup``,
+    ``-v``, ``--verbose``, ``-h``, ``--help``.
+    """
+    KNOWN_FLAGS = {
+        "--targets", "--targets-file", "--dry-run", "--no-backup",
+        "-v", "--verbose", "-h", "--help",
+    }
+
+    try:
+        idx = argv.index("--libs")
+    except ValueError:
+        return argv, []
+
+    before = argv[:idx]
+    libs: list[str] = []
+    rest_after: list[str] = []
+
+    i = idx + 1
+    collecting = True
+    while i < len(argv):
+        if collecting and argv[i] in KNOWN_FLAGS:
+            collecting = False
+        if collecting:
+            libs.append(argv[i])
+        else:
+            rest_after.append(argv[i])
+        i += 1
+
+    return before + rest_after, libs
+
+
+def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
+    raw = argv if argv is not None else sys.argv[1:]
+    rest, libs = _split_libs(raw)
+
     p = argparse.ArgumentParser(
         description="Append link libraries to specific targets in a Ninja build file.",
+        usage=(
+            "%(prog)s BUILDFILE (--targets T [T ...] | --targets-file FILE) "
+            "--libs LIB [LIB ...] [--dry-run] [--no-backup] [-v]"
+        ),
     )
     p.add_argument("buildfile", help="Path to the Ninja build file (e.g. build.ninja)")
     tgt = p.add_mutually_exclusive_group(required=True)
@@ -239,13 +297,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--targets-file",
         metavar="FILE",
         help="Path to a file listing targets (one per line).",
-    )
-    p.add_argument(
-        "--libs",
-        nargs=argparse.REMAINDER,
-        required=True,
-        metavar="LIB",
-        help="Libraries to append (place last, e.g. --libs -lm -lpthread).",
     )
     p.add_argument(
         "--dry-run",
@@ -262,11 +313,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable debug-level logging.",
     )
-    return p.parse_args(argv)
+
+    # If --libs was not supplied at all, report it clearly.
+    if not libs and "--libs" not in raw:
+        p.error("the following arguments are required: --libs")
+
+    args = p.parse_args(rest)
+    return args, libs
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
+    args, libs = _parse_args(argv)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -285,10 +342,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         targets = args.targets
 
-    # Resolve libs (REMAINDER may include a leading '--'; strip it)
-    libs = [x for x in (args.libs or []) if x and x != "--"]
     if not libs:
-        log.error("No libraries specified. Place --libs last, e.g.: --libs -lm -lpthread")
+        log.error("No libraries specified after --libs.")
         return 1
 
     result = modify_ninja_build(
@@ -305,3 +360,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
