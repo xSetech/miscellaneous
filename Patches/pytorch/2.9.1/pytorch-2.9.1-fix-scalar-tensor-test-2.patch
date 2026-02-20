@@ -1,0 +1,95 @@
+commit 88d8db7d20d8f0579b4e01dbc2a4bd5bbb05ac22 (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 04:53:37 2026 -0800
+
+    feat: add MPS implementation of put_
+    
+    Implement put_mps_ for the MPS backend, fixing the remaining
+    TestScalarTensorMPS failure after the take fix.
+    
+    The MPS implementation flattens self to 1D and uses index_put_ with
+    linear indices to write source values at the specified positions,
+    handling the non-contiguous case by copying back after the operation.
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/aten/src/ATen/native/mps/operations/Indexing.mm b/aten/src/ATen/native/mps/operations/Indexing.mm
+index 3539346f663..73b40cb143c 100644
+--- a/aten/src/ATen/native/mps/operations/Indexing.mm
++++ b/aten/src/ATen/native/mps/operations/Indexing.mm
+@@ -42,6 +42,7 @@
+ #include <ATen/ops/masked_select_native.h>
+ #include <ATen/ops/nonzero.h>
+ #include <ATen/ops/nonzero_native.h>
++#include <ATen/ops/put_native.h>
+ #include <ATen/ops/take_native.h>
+ #include <ATen/ops/view_as_real.h>
+ #endif
+@@ -992,6 +993,55 @@ Tensor& index_fill_mps_(Tensor& self, int64_t dim, const Tensor& index, const Sc
+   return self.index_fill_(dim, index, mps::wrapped_scalar_tensor_mps(source, self.device()));
+ }
+ 
++Tensor& put_mps_(Tensor& self, const Tensor& index, const Tensor& source, const bool accumulate) {
++  if (!accumulate) {
++    at::globalContext().alertNotDeterministic("put_");
++  }
++  TORCH_CHECK(
++      index.scalar_type() == ScalarType::Long,
++      "put_(): Expected a long tensor for index, but got ",
++      index.scalar_type());
++  TORCH_CHECK(
++      self.scalar_type() == source.scalar_type(),
++      "put_(): self and source expected to have the same dtype, but got self.dtype = ",
++      self.scalar_type(),
++      " and source.dtype = ",
++      source.scalar_type());
++  TORCH_CHECK(
++      self.device() == source.device() && self.device() == index.device(),
++      "put_(): self, index and source expected to be in the same device, but got self.device = ",
++      self.device(),
++      ", index.device = ",
++      index.device(),
++      ", and source.device = ",
++      source.device());
++  TORCH_CHECK_INDEX(
++      source.numel() == index.numel(),
++      "put_(): Expected source and index to have the same number of elements, but got source.numel() = ",
++      source.numel(),
++      ", index.numel() = ",
++      index.numel());
++  TORCH_CHECK_INDEX(
++      !(self.numel() == 0 && index.numel() != 0),
++      "put_(): Tried to put elements into an empty tensor");
++
++  if (index.numel() == 0) {
++    return self;
++  }
++
++  // Flatten self to 1D and use index_put_ with linear indices
++  bool needs_copy_back = !self.is_contiguous();
++  Tensor self_contig = needs_copy_back ? self.contiguous() : self;
++  auto self_flat = self_contig.view(-1);
++  torch::List<std::optional<Tensor>> idx;
++  idx.push_back(index.reshape(-1));
++  self_flat.index_put_(idx, source.reshape(-1), accumulate);
++  if (needs_copy_back) {
++    self.copy_(self_contig.view(self.sizes()));
++  }
++  return self;
++}
++
+ Tensor& take_out_mps(const Tensor& self, const Tensor& index, Tensor& out) {
+   TORCH_CHECK(
+       index.scalar_type() == ScalarType::Long,
+diff --git a/aten/src/ATen/native/native_functions.yaml b/aten/src/ATen/native/native_functions.yaml
+index 74e7dceb989..ebbf1b0c313 100644
+--- a/aten/src/ATen/native/native_functions.yaml
++++ b/aten/src/ATen/native/native_functions.yaml
+@@ -8199,6 +8199,7 @@
+   variants: method
+   dispatch:
+     CPU, CUDA: put_
++    MPS: put_mps_
+   autogen: put.out
+ 
+ - func: put(Tensor self, Tensor index, Tensor source, bool accumulate=False) -> Tensor

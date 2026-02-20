@@ -1,0 +1,101 @@
+commit d166393256039349fdd8f533669866f822225c71 (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 04:25:12 2026 -0800
+
+    feat: add MPS implementation of take/take.out
+    
+    Implement take_mps and take_out_mps for the MPS backend, fixing
+    TestScalarTensorMPS failure caused by missing take_stub registration.
+    
+    The MPS implementation flattens self to 1D, uses index_select to gather
+    elements at the specified linear indices, and reshapes the result to
+    match the index tensor's shape.
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/aten/src/ATen/native/mps/operations/Indexing.mm b/aten/src/ATen/native/mps/operations/Indexing.mm
+index fa19d2f4d12..3539346f663 100644
+--- a/aten/src/ATen/native/mps/operations/Indexing.mm
++++ b/aten/src/ATen/native/mps/operations/Indexing.mm
+@@ -35,12 +35,14 @@
+ #include <ATen/ops/index_copy_native.h>
+ #include <ATen/ops/index_fill_native.h>
+ #include <ATen/ops/index_put.h>
++#include <ATen/ops/index_select.h>
+ #include <ATen/ops/index_select_native.h>
+ #include <ATen/ops/masked_fill_native.h>
+ #include <ATen/ops/masked_scatter_native.h>
+ #include <ATen/ops/masked_select_native.h>
+ #include <ATen/ops/nonzero.h>
+ #include <ATen/ops/nonzero_native.h>
++#include <ATen/ops/take_native.h>
+ #include <ATen/ops/view_as_real.h>
+ #endif
+ 
+@@ -990,6 +992,48 @@ Tensor& index_fill_mps_(Tensor& self, int64_t dim, const Tensor& index, const Sc
+   return self.index_fill_(dim, index, mps::wrapped_scalar_tensor_mps(source, self.device()));
+ }
+ 
++Tensor& take_out_mps(const Tensor& self, const Tensor& index, Tensor& out) {
++  TORCH_CHECK(
++      index.scalar_type() == ScalarType::Long,
++      "take(): Expected a long tensor for index, but got ",
++      index.scalar_type());
++  TORCH_CHECK(
++      self.scalar_type() == out.scalar_type(),
++      "take(): self and out expected to have the same dtype, but got self.dtype = ",
++      self.scalar_type(),
++      " and out.dtype = ",
++      out.scalar_type());
++  TORCH_CHECK(
++      self.device() == out.device() && self.device() == index.device(),
++      "take(): self, index and out expected to be in the same device, but got self.device = ",
++      self.device(),
++      ", index.device = ",
++      index.device(),
++      ", and out.device = ",
++      out.device());
++  TORCH_CHECK_INDEX(
++      !(self.numel() == 0 && index.numel() != 0),
++      "take(): tried to take from an empty tensor");
++
++  at::native::resize_output(out, index.sizes());
++
++  if (index.numel() == 0) {
++    return out;
++  }
++
++  auto self_flat = self.reshape(-1);
++  auto index_flat = index.reshape(-1);
++  auto result = at::index_select(self_flat, 0, index_flat).reshape(index.sizes());
++  out.copy_(result);
++  return out;
++}
++
++Tensor take_mps(const Tensor& self, const Tensor& index) {
++  auto out = at::empty({0}, self.options());
++  take_out_mps(self, index, out);
++  return out;
++}
++
+ REGISTER_DISPATCH(index_stub, &mps::index_kernel_mps)
+ REGISTER_DISPATCH(index_put_stub, &mps::index_put_kernel_mps)
+ } // namespace at::native
+diff --git a/aten/src/ATen/native/native_functions.yaml b/aten/src/ATen/native/native_functions.yaml
+index abb061afc5c..74e7dceb989 100644
+--- a/aten/src/ATen/native/native_functions.yaml
++++ b/aten/src/ATen/native/native_functions.yaml
+@@ -9299,11 +9299,13 @@
+ - func: take.out(Tensor self, Tensor index, *, Tensor(a!) out) -> Tensor(a!)
+   dispatch:
+     CPU, CUDA: take_out
++    MPS: take_out_mps
+ 
+ - func: take(Tensor self, Tensor index) -> Tensor
+   variants: method, function
+   dispatch:
+     CPU, CUDA: take
++    MPS: take_mps
+ 
+ - func: take_along_dim.out(Tensor self, Tensor indices, int? dim=None, *, Tensor(a!) out) -> Tensor(a!)
+ 
