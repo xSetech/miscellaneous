@@ -3,14 +3,14 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 04:25:12 2026 -0800
 
     feat: add MPS implementation of take/take.out
-    
+
     Implement take_mps and take_out_mps for the MPS backend, fixing
     TestScalarTensorMPS failure caused by missing take_stub registration.
-    
+
     The MPS implementation flattens self to 1D, uses index_select to gather
     elements at the specified linear indices, and reshapes the result to
     match the index tensor's shape.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/aten/src/ATen/native/mps/operations/Indexing.mm b/aten/src/ATen/native/mps/operations/Indexing.mm
@@ -31,11 +31,11 @@ index fa19d2f4d12..3539346f663 100644
 +#include <ATen/ops/take_native.h>
  #include <ATen/ops/view_as_real.h>
  #endif
- 
+
 @@ -990,6 +992,48 @@ Tensor& index_fill_mps_(Tensor& self, int64_t dim, const Tensor& index, const Sc
    return self.index_fill_(dim, index, mps::wrapped_scalar_tensor_mps(source, self.device()));
  }
- 
+
 +Tensor& take_out_mps(const Tensor& self, const Tensor& index, Tensor& out) {
 +  TORCH_CHECK(
 +      index.scalar_type() == ScalarType::Long,
@@ -90,12 +90,12 @@ index abb061afc5c..74e7dceb989 100644
    dispatch:
      CPU, CUDA: take_out
 +    MPS: take_out_mps
- 
+
  - func: take(Tensor self, Tensor index) -> Tensor
    variants: method, function
    dispatch:
      CPU, CUDA: take
 +    MPS: take_mps
- 
+
  - func: take_along_dim.out(Tensor self, Tensor indices, int? dim=None, *, Tensor(a!) out) -> Tensor(a!)
- 
+

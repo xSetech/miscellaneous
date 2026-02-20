@@ -3,21 +3,21 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 03:59:49 2026 -0800
 
     fix: add fmsub<Half> specializations for AVX2 and AVX512
-    
+
     fmadd<Half> already had platform-specific specializations in
     vec256_half.h and vec512_bfloat16.h that compute the multiply-add
     in float precision via _mm256_fmadd_ps / _mm512_fmadd_ps. fmsub<Half>
     had no such specializations, causing two problems:
-    
+
     1. The generic primary template (a * b - c) was instantiated, which
        double-rounds through Half on the intermediate product.
     2. On AVX2/AVX512, Vectorized<Half> is Vectorized16<Half> whose
        operator[] is explicitly deleted, causing a compile error when
        the primary template body is instantiated.
-    
+
     Add matching fmsub<Half> specializations using _mm256_fmsub_ps and
     _mm512_fmsub_ps, consistent with the existing fmadd<Half> pattern.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/aten/src/ATen/cpu/vec/vec256/vec256_half.h b/aten/src/ATen/cpu/vec/vec256/vec256_half.h
@@ -27,7 +27,7 @@ index 3022d265b39..02eb0826cac 100644
 @@ -263,6 +263,22 @@ Vectorized<Half> inline fmadd(
    return cvtfp32_fp16(o1, o2);
  }
- 
+
 +template <>
 +Vectorized<Half> inline fmsub(
 +    const Vectorized<Half>& a,
@@ -46,7 +46,7 @@ index 3022d265b39..02eb0826cac 100644
 +
  CONVERT_VECTORIZED_INIT(Half, half)
  LOAD_FP32_VECTORIZED_INIT(Half, fp16)
- 
+
 diff --git a/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h b/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
 index 844b3b1fcc1..f7819a43eed 100644
 --- a/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
@@ -54,7 +54,7 @@ index 844b3b1fcc1..f7819a43eed 100644
 @@ -1847,6 +1847,22 @@ Vectorized<Half> inline fmadd(
    return cvtfp32_fp16(o1, o2);
  }
- 
+
 +template <>
 +Vectorized<Half> inline fmsub(
 +    const Vectorized<Half>& a,

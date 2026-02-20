@@ -3,9 +3,9 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 04:59:21 2026 -0800
 
     fix: resolve AVX2 vec_test_all_types failures for BFloat16, Half, complex, and lgamma
-    
+
     Four independent bugs fixed:
-    
+
     1. zero_mask() for BFloat16/Half (Vectorized16<T>):
        _mm256_movemask_epi8 returns 2 bits per 16-bit element, so a single
        zero at element 0 returned 3 instead of 1.  Fix: pack the 16-bit
@@ -13,28 +13,28 @@ Date:   Fri Feb 20 04:59:21 2026 -0800
        to 0x80, MSB set; 0x0000 stays 0x00), then use movemask_epi8 and
        compress the interleaved result to a contiguous 16-bit mask with
        (mask & 0xFF) | ((mask >> 8) & 0xFF00).
-    
+
     2. BFloat16 fmadd uses true hardware FMA (_mm256_fmadd_ps) while the
        scalar reference uses separate multiply + add (via PreventFma).  For
        BFloat16's coarse 7-bit mantissa the single-rounding FMA result can
        land on the opposite side of a BFloat16 rounding boundary, producing
        exactly 1 ULP of difference.  Fix: replace _mm256_fmadd_ps with
        _mm256_add_ps(_mm256_mul_ps(...), ...) to match the reference.
-    
+
     3. local_division for complex<float/double> used an explicit (ac+bd)/|y|²
        formula with PreventFma, while the AVX2 vectorized path uses the C++
        complex operator/ (Smith's algorithm).  These differ by up to ~8 ULPs,
        exceeding EXPECT_FLOAT_EQ's 4 ULP tolerance.  Fix: for non-VSX
        non-ZVECTOR builds, return x / y directly (matching the scalar
        fallback); VSX keeps its original FMA-based formula.
-    
+
     4. lgamma double near negative-integer poles: at inputs like -99.999...
        (one double ULP from x=-100), both glibc lgamma and Sleef lose
        accuracy and can disagree by ~0.007, far beyond the 1e-9 tolerance.
        Fix: add a filter that shifts values within 0.1 of any non-positive
        integer to the midpoint (e.g. -99.999 -> -100.5) where both
        implementations are accurate.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/aten/src/ATen/cpu/vec/vec256/vec256_16bit_float.h b/aten/src/ATen/cpu/vec/vec256/vec256_16bit_float.h
@@ -82,7 +82,7 @@ index 1306270de71..642fb3525fd 100644
 +  auto o2 = _mm256_add_ps(_mm256_mul_ps(a_hi, b_hi), c_hi);
    return cvtfp32_bf16(o1, o2);
  }
- 
+
 diff --git a/aten/src/ATen/test/vec_test_all_types.cpp b/aten/src/ATen/test/vec_test_all_types.cpp
 index b7b756f74ba..0b012c63c25 100644
 --- a/aten/src/ATen/test/vec_test_all_types.cpp

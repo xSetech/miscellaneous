@@ -3,7 +3,7 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Mon Feb 16 11:06:50 2026 -0800
 
     Fix -Wmissing-prototypes suppression for generated files with symlinked source dirs
-    
+
     The per-file suppression of -Werror=missing-prototypes for generated
     files in the build directory was failing when the source tree was
     accessed through a symlink. The loop at line 817 resolves each source
@@ -12,10 +12,10 @@ Date:   Mon Feb 16 11:06:50 2026 -0800
     symlink to /Volumes/Workbench/Src), string(FIND) never matches and
     the -Wno-error=missing-prototypes flag is never applied, causing
     build failures on generated files like RegisterFunctionalization_*.cpp.
-    
+
     Resolve CMAKE_BINARY_DIR to its real path before the comparison so
     both sides use canonical paths.
-    
+
     Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 
 diff --git a/caffe2/CMakeLists.txt b/caffe2/CMakeLists.txt

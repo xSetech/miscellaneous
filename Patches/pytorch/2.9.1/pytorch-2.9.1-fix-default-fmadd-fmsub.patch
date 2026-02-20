@@ -3,19 +3,19 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 03:27:23 2026 -0800
 
     fix: use float-precision intermediates in DEFAULT fmadd/fmsub for Half
-    
+
     The generic fmadd/fmsub templates used `a * b + c` / `a * b - c`.
     For c10::Half, operator* returns Half (float(a)*float(b) truncated back
     to Half), causing a double-rounding: once after the multiply, and again
     after the add. This produces 1 ULP differences vs the expected
     float-intermediate result in vec_test_all_types (Fmadd, Fmsub,
     FmaddVecN for DEFAULT::Vectorized<c10::Half>).
-    
+
     Fix by using `if constexpr` to compute the full multiply-add in float
     and convert to Half only once. Platform-specific full specializations
     (AVX2, NEON, AVX512) are unaffected as they take precedence over the
     primary template.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/aten/src/ATen/cpu/vec/vec_base.h b/aten/src/ATen/cpu/vec/vec_base.h
@@ -40,7 +40,7 @@ index bfecfa3f933..dd338145b47 100644
 +    return a * b + c;
 +  }
  }
- 
+
  VECTORIZED_SUPPORT_SCALARS_FOR_TERNARY_FUNC(fmadd)
 @@ -1262,7 +1273,18 @@ inline Vectorized<T> fmsub(
      const Vectorized<T>& a,
@@ -60,5 +60,5 @@ index bfecfa3f933..dd338145b47 100644
 +    return a * b - c;
 +  }
  }
- 
+
  VECTORIZED_SUPPORT_SCALARS_FOR_TERNARY_FUNC(fmsub)

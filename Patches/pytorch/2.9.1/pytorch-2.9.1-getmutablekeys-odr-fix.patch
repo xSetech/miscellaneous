@@ -3,16 +3,16 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 03:15:56 2026 -0800
 
     fix: move getMutableKeys() out of header to prevent dylib ODR violation
-    
+
     The static local variable in the inline getMutableKeys() was duplicated
     across the dylib boundary, causing registerDeviceConfigParserHook() to
     update the test binary's copy while parseArgs() in libc10.dylib checked
     its own separate copy, failing to find device-specific keys.
-    
+
     Moving the definition to AllocatorConfig.cpp ensures a single exported
     symbol with one shared static local, fixing the c10_AllocatorConfig_test
     failure.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/c10/core/AllocatorConfig.cpp b/c10/core/AllocatorConfig.cpp
@@ -22,7 +22,7 @@ index c6b6e95f43b..6da487b8615 100644
 @@ -11,6 +11,17 @@ constexpr size_t kRoundUpPowerOfTwoStart = 1 * kMB; // 1MB
  constexpr size_t kRoundUpPowerOfTwoEnd = 64 * 1024ul * kMB; // 64GB
  } // anonymous namespace
- 
+
 +std::unordered_set<std::string>& AcceleratorAllocatorConfig::getMutableKeys() {
 +  static std::unordered_set<std::string> keys{
 +      "max_split_size_mb",
@@ -42,7 +42,7 @@ index 68cc47a8417..2a3b17567e4 100644
 --- a/c10/core/AllocatorConfig.h
 +++ b/c10/core/AllocatorConfig.h
 @@ -222,16 +222,7 @@ class C10_API AcceleratorAllocatorConfig {
- 
+
    // Use `Construct On First Use Idiom` to avoid `Static Initialization Order`
    // issue.
 -  static std::unordered_set<std::string>& getMutableKeys() {
@@ -56,6 +56,6 @@ index 68cc47a8417..2a3b17567e4 100644
 -    return keys;
 -  }
 +  static std::unordered_set<std::string>& getMutableKeys();
- 
+
    // Returns the set of valid keys for the allocator configuration.
    // This set is used to validate the presence and correctness of keys in

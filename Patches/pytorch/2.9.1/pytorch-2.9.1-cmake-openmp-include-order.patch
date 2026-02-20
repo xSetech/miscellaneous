@@ -3,17 +3,17 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Sun Feb 15 23:00:31 2026 -0800
 
     Fix protobuf header conflict with system protobuf on macOS
-    
+
     On macOS with Homebrew, the OpenMP detection adds -I/usr/local/include
     to compiler flags. Since -I paths are searched before -isystem paths,
     this causes the system protobuf v33 headers (which no longer define
     PROTOBUF_VERSION) to shadow the bundled protobuf v3.13 headers,
     triggering a version mismatch error when compiling ONNX .pb.h files.
-    
+
     Change include_directories from BEFORE SYSTEM to BEFORE so the bundled
     protobuf headers use -I instead of -isystem, giving them proper
     precedence.
-    
+
     Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 
 diff --git a/cmake/ProtoBuf.cmake b/cmake/ProtoBuf.cmake
@@ -21,7 +21,7 @@ index fe3113205df..54c68d083bc 100644
 --- a/cmake/ProtoBuf.cmake
 +++ b/cmake/ProtoBuf.cmake
 @@ -107,7 +107,11 @@ endif()
- 
+
  get_target_property(__tmp protobuf::libprotobuf INTERFACE_INCLUDE_DIRECTORIES)
  message(STATUS "Caffe2 protobuf include directory: " ${__tmp})
 -include_directories(BEFORE SYSTEM ${__tmp})
@@ -30,6 +30,6 @@ index fe3113205df..54c68d083bc 100644
 +# protobuf headers that may be pulled in via broad -I paths (e.g.
 +# -I/usr/local/include added by OpenMP detection on macOS).
 +include_directories(BEFORE ${__tmp})
- 
+
  # If Protobuf_VERSION is known (true in most cases, false if we are building
  # local protobuf), then we will add a protobuf version check in

@@ -3,14 +3,14 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 00:26:10 2026 -0800
 
     build: stage protoc output to prevent spurious downstream recompilation
-    
+
     Route protoc's --cpp_out to a __protoc_staging scratch directory and run
     ProtoBufPatch.cmake there, then use cmake -E copy_if_different to update
     the real .pb.cc/.pb.h only when content has actually changed. Combined
     with the restat=1 already present on these build edges, this prevents
     ninja from triggering recompilation of all ONNX proto consumers on every
     build where the .proto inputs are unchanged.
-    
+
     Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt

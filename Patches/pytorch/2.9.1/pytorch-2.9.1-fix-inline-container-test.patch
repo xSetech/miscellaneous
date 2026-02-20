@@ -3,7 +3,7 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 04:24:48 2026 -0800
 
     fix: restore CPU allocator after allocator tests to prevent dangling pointer
-    
+
     SaveAndLoadWithAllocator and LoadWithMultiThreadsWithAllocator both set
     the global CPU allocator to a local TestAllocator instance via
     SetCPUAllocator. When the test ends the local goes out of scope, leaving
@@ -11,10 +11,10 @@ Date:   Fri Feb 20 04:24:48 2026 -0800
     then calls GetCPUAllocator(), receives that dangling pointer, and uses it
     as the base for its own TestAllocator, causing a segfault on the first
     virtual call through the stale vtable.
-    
+
     Fix by restoring the original allocator at the end of each test using
     the same priority (10) so the SetAllocator priority-gate is satisfied.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/caffe2/serialize/inline_container_test.cc b/caffe2/serialize/inline_container_test.cc
@@ -29,8 +29,8 @@ index 489751522fb..c6531eb956c 100644
 +  // Restore the original CPU allocator so it doesn't dangle after this test.
 +  c10::SetCPUAllocator(defaultAllocator, 10 /* priority */);
  }
- 
- 
+
+
 @@ -624,6 +627,9 @@ TEST(PyTorchStreamWriterAndReader, LoadWithMultiThreadsWithAllocator) {
    }
    // clean up
@@ -39,5 +39,5 @@ index 489751522fb..c6531eb956c 100644
 +  // Restore the original CPU allocator so it doesn't dangle after this test.
 +  c10::SetCPUAllocator(defaultAllocator, 10 /* priority */);
  }
- 
+
  class ChunkRecordIteratorTest : public ::testing::TestWithParam<int64_t> {};

@@ -10,7 +10,7 @@ index 50e57144..4d2719b3 100644
 +++ b/include/fmt/format.h
 @@ -41,6 +41,7 @@
  #include "base.h"
- 
+
  #ifndef FMT_MODULE
 +#  include <cstdlib>  // malloc and free
  #  include <cmath>    // std::signbit

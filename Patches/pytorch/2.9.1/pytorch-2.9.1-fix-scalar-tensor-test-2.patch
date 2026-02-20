@@ -3,14 +3,14 @@ Author: Seth Junot <xsetech@gmail.com>
 Date:   Fri Feb 20 04:53:37 2026 -0800
 
     feat: add MPS implementation of put_
-    
+
     Implement put_mps_ for the MPS backend, fixing the remaining
     TestScalarTensorMPS failure after the take fix.
-    
+
     The MPS implementation flattens self to 1D and uses index_put_ with
     linear indices to write source values at the specified positions,
     handling the non-contiguous case by copying back after the operation.
-    
+
     Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 diff --git a/aten/src/ATen/native/mps/operations/Indexing.mm b/aten/src/ATen/native/mps/operations/Indexing.mm
@@ -28,7 +28,7 @@ index 3539346f663..73b40cb143c 100644
 @@ -992,6 +993,55 @@ Tensor& index_fill_mps_(Tensor& self, int64_t dim, const Tensor& index, const Sc
    return self.index_fill_(dim, index, mps::wrapped_scalar_tensor_mps(source, self.device()));
  }
- 
+
 +Tensor& put_mps_(Tensor& self, const Tensor& index, const Tensor& source, const bool accumulate) {
 +  if (!accumulate) {
 +    at::globalContext().alertNotDeterministic("put_");
@@ -91,5 +91,5 @@ index 74e7dceb989..ebbf1b0c313 100644
      CPU, CUDA: put_
 +    MPS: put_mps_
    autogen: put.out
- 
+
  - func: put(Tensor self, Tensor index, Tensor source, bool accumulate=False) -> Tensor
