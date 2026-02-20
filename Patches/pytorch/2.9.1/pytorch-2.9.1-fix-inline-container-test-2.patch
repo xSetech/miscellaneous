@@ -1,0 +1,55 @@
+commit 6e0e27158655f6f95194bf811cb7eddd8c6aa119 (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 13:46:00 2026 -0800
+
+    fix: eliminate race condition in multi-threaded stream reader tests
+    
+    All IStreamAdapter additional readers pointed to the same istringstream
+    object as the main reader. IStreamAdapter::read() does seekg(pos) then
+    read(buf, n) non-atomically, so concurrent threads racing on the same
+    stream cursor produced incorrect reads (memcmp failures).
+    
+    Give each additional reader its own istringstream copy of the file data
+    so every thread has an independent cursor, matching the intended design
+    where additional readers are separate I/O channels.
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/caffe2/serialize/inline_container_test.cc b/caffe2/serialize/inline_container_test.cc
+index c6531eb956c..784c98aef23 100644
+--- a/caffe2/serialize/inline_container_test.cc
++++ b/caffe2/serialize/inline_container_test.cc
+@@ -175,10 +175,15 @@ TEST(PyTorchStreamWriterAndReader, LoadWithMultiThreads) {
+ 
+   // Inplace multi-threading getRecord(name, dst, n, additional_readers) test
+   additionalReader.clear();
++  // Each additional reader needs its own istringstream so concurrent seekg+read
++  // calls from different threads don't race on a shared stream cursor.
++  std::vector<std::unique_ptr<std::istringstream>> additionalIss;
+   std::vector<uint8_t> dst1(size1), dst2(size2);
+   for (int i = 0; i < 10; ++i) {
+     // Test various sizes of read threads
+-    additionalReader.push_back(std::make_unique<IStreamAdapter>(&iss));
++    additionalIss.push_back(std::make_unique<std::istringstream>(the_file));
++    additionalReader.push_back(
++        std::make_unique<IStreamAdapter>(additionalIss.back().get()));
+ 
+     ret = reader.getRecord("key1", dst1.data(), size1, additionalReader);
+     ASSERT_EQ(ret, size1);
+@@ -614,10 +619,15 @@ TEST(PyTorchStreamWriterAndReader, LoadWithMultiThreadsWithAllocator) {
+ 
+   // Inplace multi-threading getRecord(name, dst, n, additional_readers) test
+   additionalReader.clear();
++  // Each additional reader needs its own istringstream so concurrent seekg+read
++  // calls from different threads don't race on a shared stream cursor.
++  std::vector<std::unique_ptr<std::istringstream>> additionalIss2;
+   std::vector<uint8_t> dst1(size1), dst2(size2);
+   for (int i = 0; i < 10; ++i) {
+     // Test various sizes of read threads
+-    additionalReader.push_back(std::make_unique<IStreamAdapter>(&iss));
++    additionalIss2.push_back(std::make_unique<std::istringstream>(the_file));
++    additionalReader.push_back(
++        std::make_unique<IStreamAdapter>(additionalIss2.back().get()));
+ 
+     ret = reader.getRecord("key1", dst1.data(), size1, additionalReader);
+     ASSERT_EQ(ret, size1);

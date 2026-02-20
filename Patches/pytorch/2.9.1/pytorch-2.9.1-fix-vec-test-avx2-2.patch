@@ -1,0 +1,74 @@
+commit c550c8b0a8e582d36b0405a50cab475bbfca36a7 (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 14:01:08 2026 -0800
+
+    fix: resolve BFloat16 fmadd/fmsub intermediate rounding mismatch
+    
+    The previous fix (fcf978c) addressed FMA vs. non-FMA rounding but missed
+    the real cause of the BFloat16 fmadd/fmsub test failures:
+    
+    1. BFloat16::operator* returns BFloat16, so local_fmadd/local_fmsub with
+       OpMathType<BFloat16>::type = BFloat16 (the default) rounded the float32
+       product back to BFloat16 precision before adding/subtracting c.  The
+       AVX2 vectorized paths widen to float32, compute mul+add in float32, and
+       only round the final result to BFloat16 — a different result when the
+       product crosses a BFloat16 boundary.
+    
+       Fix: add OpMathType<BFloat16>::type = float (mirroring the existing Half
+       specialization) so the scalar reference computes in float32 with a single
+       final rounding, matching the vectorized paths.
+    
+    2. fmsub<BFloat16> had no AVX2 specialization, so it fell through to
+       vec_base.h which uses BFloat16 arithmetic (with intermediate rounding).
+       After fixing OpMathType, the scalar reference and vectorized path were
+       now mismatched in the opposite direction.
+    
+       Fix: add an explicit fmsub<BFloat16> AVX2 specialization in
+       vec256_bfloat16.h (using _mm256_sub_ps(_mm256_mul_ps(...), ...),
+       mirroring the existing fmadd specialization) to compute in float32 with
+       a single final rounding.
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/aten/src/ATen/cpu/vec/vec256/vec256_bfloat16.h b/aten/src/ATen/cpu/vec/vec256/vec256_bfloat16.h
+index 642fb3525fd..dd679870f8e 100644
+--- a/aten/src/ATen/cpu/vec/vec256/vec256_bfloat16.h
++++ b/aten/src/ATen/cpu/vec/vec256/vec256_bfloat16.h
+@@ -267,6 +267,22 @@ Vectorized<BFloat16> inline fmadd(
+   return cvtfp32_bf16(o1, o2);
+ }
+ 
++template <>
++Vectorized<BFloat16> inline fmsub(
++    const Vectorized<BFloat16>& a,
++    const Vectorized<BFloat16>& b,
++    const Vectorized<BFloat16>& c) {
++  __m256 a_lo, a_hi;
++  __m256 b_lo, b_hi;
++  __m256 c_lo, c_hi;
++  cvtbf16_fp32(__m256i(a), a_lo, a_hi);
++  cvtbf16_fp32(__m256i(b), b_lo, b_hi);
++  cvtbf16_fp32(__m256i(c), c_lo, c_hi);
++  auto o1 = _mm256_sub_ps(_mm256_mul_ps(a_lo, b_lo), c_lo);
++  auto o2 = _mm256_sub_ps(_mm256_mul_ps(a_hi, b_hi), c_hi);
++  return cvtfp32_bf16(o1, o2);
++}
++
+ CONVERT_VECTORIZED_INIT(BFloat16, bfloat16)
+ LOAD_FP32_VECTORIZED_INIT(BFloat16, bf16)
+ 
+diff --git a/aten/src/ATen/test/vec_test_all_types.h b/aten/src/ATen/test/vec_test_all_types.h
+index 85eb853f99d..8efdc74b761 100644
+--- a/aten/src/ATen/test/vec_test_all_types.h
++++ b/aten/src/ATen/test/vec_test_all_types.h
+@@ -75,6 +75,10 @@ template <>
+ struct OpMathType<c10::Half> {
+   using type = float;
+ };
++template <>
++struct OpMathType<c10::BFloat16> {
++  using type = float;
++};
+ 
+ 
+ template<typename T>
