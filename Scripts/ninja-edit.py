@@ -200,6 +200,19 @@ def modify_ninja_build(
             stripped.startswith(var + " =") or stripped.startswith(var + "=")
         ):
             if verb == "append":
+                content = line.rstrip("\n") if line.endswith("\n") else line
+                suffix = " " + values_str
+                if content.endswith(suffix):
+                    log.info(
+                        "Values %r already present at end of %s for %s at line %d; skipping.",
+                        values_str, var, looking_for_var, i + 1,
+                    )
+                    for t in looking_for_var:
+                        remaining_targets.discard(t)
+                    new_lines.append(line)
+                    looking_for_var = set()
+                    i += 1
+                    continue
                 if line.endswith("\n"):
                     modified = line.rstrip("\n") + " " + values_str + "\n"
                 else:
