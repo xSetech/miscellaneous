@@ -1,0 +1,324 @@
+commit acf1993b0f7a26056d8364da2ad8db4e73403fb3 (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 15:31:17 2026 -0800
+
+    test: add MPS infrastructure C++ GoogleTest coverage
+
+    Add two new MPS test binaries and extend mps_test_print:
+
+    - mps_test_infrastructure.cpp (13 tests):
+      - MPSStreamTest: getDefaultMPSStream/getCurrentMPSStream non-null,
+        device_index == 0, synchronize(COMMIT_AND_WAIT) lifecycle
+      - MPSGeneratorTest: validity, seed round-trip, manual_seed
+        reproducibility, get/set state preservation
+      - MPSMetalLibraryExtTest: getMaxThreadsPerThreadgroup/
+        getThreadExecutionWidth > 0, half-precision kernel, int32 kernel,
+        integer scalar argument passing
+
+    - mps_test_events.mm (3 tests, ObjC++ for MTLSharedEventNotificationBlock):
+      - MPSEventTest: acquire/record/synchronize/release lifecycle,
+        query-after-synchronize, elapsed time measurement
+
+    - mps_test_print.cpp: add PrintBFloat16Matrix (MPSBFloat16Type)
+
+    Register new sources in ATen/test/CMakeLists.txt; mps_test_events.mm
+    is gated under if(APPLE AND USE_MPS).
+
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/aten/src/ATen/test/CMakeLists.txt b/aten/src/ATen/test/CMakeLists.txt
+index 81b3ce90b36..cef435814f9 100644
+--- a/aten/src/ATen/test/CMakeLists.txt
++++ b/aten/src/ATen/test/CMakeLists.txt
+@@ -111,10 +111,12 @@ list(APPEND ATen_VEC_TEST_SRCS
+ list(APPEND ATen_MPS_TEST_SRCS
+   ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_print.cpp
+   ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_allocator.cpp
+-  ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_metal_library.cpp)
++  ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_metal_library.cpp
++  ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_infrastructure.cpp)
+ if(APPLE AND USE_MPS)
+   list(APPEND ATen_MPS_TEST_SRCS
+-    ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_objc_interface.mm)
++    ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_objc_interface.mm
++    ${CMAKE_CURRENT_SOURCE_DIR}/mps_test_events.mm)
+ endif()
+
+ list(APPEND ATen_XPU_TEST_SRCS
+diff --git a/aten/src/ATen/test/mps_test_events.mm b/aten/src/ATen/test/mps_test_events.mm
+new file mode 100644
+index 00000000000..03e0995b683
+--- /dev/null
++++ b/aten/src/ATen/test/mps_test_events.mm
+@@ -0,0 +1,83 @@
++// ObjC++ tests for the MPS event pool (MPSEvent / MPSEventPool).
++// This file must be compiled as Objective-C++ (.mm) because MPSEvent.h
++// references MTLSharedEventNotificationBlock, an ObjC block type.
++//
++// Key semantics of the event pool:
++//   recordEvent(id, syncEvent=true)  -> encodes signal + commits command buffer
++//                                       (SyncType::COMMIT, not COMMIT_AND_WAIT)
++//   recordEvent(id, syncEvent=false) -> encodes signal only; buffer NOT committed
++//   synchronizeEvent(id)             -> schedules a notifyListener on the event
++//                                       and blocks the CPU until the GPU fires it;
++//                                       requires the command buffer to be committed
++//   elapsedTime(start, end)          -> internally does COMMIT_AND_WAIT + cpu sync
++//   queryEvent(id)                   -> returns true only after the GPU signal fires
++
++#include <gtest/gtest.h>
++#include <torch/torch.h>
++#include <ATen/mps/MPSEvent.h>
++
++TEST(MPSEventTest, AcquireAndRelease) {
++  ASSERT_TRUE(torch::mps::is_available());
++  auto pool = at::mps::getMPSEventPool();
++
++  // Queue some GPU work so the command buffer is non-empty.
++  auto t = torch::rand({256}, at::device(at::kMPS));
++
++  // Acquire event (no timing).  syncEvent=true commits the command buffer
++  // (SyncType::COMMIT); the GPU then executes the encodeSignalEvent asynchronously.
++  id_t event_id = pool->acquireEvent(/*enable_timing=*/false);
++  pool->recordEvent(event_id, /*syncEvent=*/true);
++
++  // synchronizeEvent schedules a notifyListener and blocks the CPU until the
++  // GPU signals the event and the listener fires.
++  pool->synchronizeEvent(event_id);
++
++  // After synchronization the MTLSharedEvent has been signaled.
++  ASSERT_TRUE(pool->queryEvent(event_id));
++
++  pool->releaseEvent(event_id);
++}
++
++TEST(MPSEventTest, EventQueryTransition) {
++  ASSERT_TRUE(torch::mps::is_available());
++  auto pool = at::mps::getMPSEventPool();
++
++  auto t = torch::rand({256}, at::device(at::kMPS));
++
++  id_t event_id = pool->acquireEvent(/*enable_timing=*/false);
++  // Commit the command buffer so the GPU will signal the event.
++  pool->recordEvent(event_id, /*syncEvent=*/true);
++
++  // Before synchronization the GPU signal may not have reached the CPU yet.
++  // After synchronization (which waits for the listener) it must be true.
++  pool->synchronizeEvent(event_id);
++  ASSERT_TRUE(pool->queryEvent(event_id));
++
++  pool->releaseEvent(event_id);
++}
++
++TEST(MPSEventTest, ElapsedTime) {
++  ASSERT_TRUE(torch::mps::is_available());
++  auto pool = at::mps::getMPSEventPool();
++
++  // elapsedTime() requires enable_timing=true so the notify listener
++  // records m_completion_time on both events.
++  id_t start_id = pool->acquireEvent(/*enable_timing=*/true);
++  id_t end_id   = pool->acquireEvent(/*enable_timing=*/true);
++
++  // Record start (no commit yet).
++  pool->recordEvent(start_id, /*syncEvent=*/false);
++  // GPU work between the two events.
++  auto t = torch::rand({512, 512}, at::device(at::kMPS));
++  // Record end (no commit yet).
++  pool->recordEvent(end_id, /*syncEvent=*/false);
++
++  // elapsedTime() internally calls COMMIT_AND_WAIT on the stream to flush
++  // all pending commands and then waits for the end event's CPU notifyListener
++  // before reading completion timestamps.
++  double elapsed_ms = pool->elapsedTime(start_id, end_id);
++  ASSERT_GE(elapsed_ms, 0.0);
++
++  pool->releaseEvent(start_id);
++  pool->releaseEvent(end_id);
++}
+diff --git a/aten/src/ATen/test/mps_test_infrastructure.cpp b/aten/src/ATen/test/mps_test_infrastructure.cpp
+new file mode 100644
+index 00000000000..9ccc8246a1e
+--- /dev/null
++++ b/aten/src/ATen/test/mps_test_infrastructure.cpp
+@@ -0,0 +1,168 @@
++// Tests for MPS infrastructure: streams, generators, and extended
++// MetalShaderLibrary usage (half/int32 kernels, thread-group properties).
++// These are pure C++ tests; ObjC-dependent tests live in mps_test_events.mm.
++
++#include <gtest/gtest.h>
++#include <torch/torch.h>
++#include <ATen/mps/MPSGeneratorImpl.h>
++#include <ATen/mps/MPSStream.h>
++#include <ATen/native/mps/MetalShaderLibrary.h>
++
++using namespace at::native::mps;
++
++// ---------------------------------------------------------------------------
++// MPSStreamTest
++// ---------------------------------------------------------------------------
++
++TEST(MPSStreamTest, GetDefaultStream) {
++  ASSERT_TRUE(torch::mps::is_available());
++  ASSERT_NE(at::mps::getDefaultMPSStream(), nullptr);
++}
++
++TEST(MPSStreamTest, GetCurrentStream) {
++  ASSERT_NE(at::mps::getCurrentMPSStream(), nullptr);
++}
++
++TEST(MPSStreamTest, StreamDeviceIndex) {
++  ASSERT_EQ(at::mps::getCurrentMPSStream()->device_index(), 0);
++}
++
++TEST(MPSStreamTest, SynchronizeCommitAndWait) {
++  // Trigger GPU work then flush and wait.
++  auto t = torch::rand({128}, at::device(at::kMPS));
++  at::mps::getCurrentMPSStream()->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
++  // Tensor must still be valid and on MPS after synchronize.
++  ASSERT_EQ(t.numel(), 128);
++  ASSERT_EQ(t.device().type(), at::kMPS);
++}
++
++// ---------------------------------------------------------------------------
++// MPSGeneratorTest
++// ---------------------------------------------------------------------------
++
++TEST(MPSGeneratorTest, DefaultGeneratorValid) {
++  const auto& gen = at::mps::detail::getDefaultMPSGenerator();
++  ASSERT_TRUE(gen.defined());
++}
++
++TEST(MPSGeneratorTest, CreateGeneratorWithSeed) {
++  auto gen = at::mps::detail::createMPSGenerator(42);
++  ASSERT_EQ(gen.current_seed(), static_cast<uint64_t>(42));
++}
++
++TEST(MPSGeneratorTest, SeedSetGet) {
++  auto gen = at::mps::detail::createMPSGenerator(0);
++  gen.set_current_seed(99);
++  ASSERT_EQ(gen.current_seed(), static_cast<uint64_t>(99));
++}
++
++TEST(MPSGeneratorTest, ManualSeedReproducibility) {
++  // The same manual seed must produce identical random tensors.
++  torch::mps::manual_seed(12345);
++  auto t1 = torch::rand({16}, at::device(at::kMPS));
++  torch::mps::synchronize();
++
++  torch::mps::manual_seed(12345);
++  auto t2 = torch::rand({16}, at::device(at::kMPS));
++  torch::mps::synchronize();
++
++  ASSERT_TRUE(t1.equal(t2));
++}
++
++TEST(MPSGeneratorTest, StatePreservation) {
++  // Save generator state, generate values, restore state, generate again;
++  // the two sequences must match.
++  torch::mps::manual_seed(7777);
++
++  // Capture state before first generation.  Generator is a value type
++  // (intrusive_ptr wrapper) so this copy shares the underlying impl.
++  auto gen = at::mps::detail::getDefaultMPSGenerator();
++  auto saved_state = gen.get_state();  // returns at::Tensor
++
++  auto t1 = torch::rand({8}, at::device(at::kMPS));
++  torch::mps::synchronize();
++
++  // Restore and regenerate.
++  gen.set_state(saved_state);
++  auto t2 = torch::rand({8}, at::device(at::kMPS));
++  torch::mps::synchronize();
++
++  ASSERT_TRUE(t1.equal(t2));
++}
++
++// ---------------------------------------------------------------------------
++// MPSMetalLibraryExtTest
++// ---------------------------------------------------------------------------
++
++TEST(MPSMetalLibraryExtTest, ThreadGroupProperties) {
++  DynamicMetalShaderLibrary lib(R"MTL(
++  kernel void dummy(device float* t, uint idx [[thread_position_in_grid]]) {
++    t[idx] = 0.0f;
++  }
++  )MTL");
++  auto func = lib.getKernelFunction("dummy");
++  ASSERT_GT(func->getMaxThreadsPerThreadgroup(), static_cast<uint64_t>(0));
++  ASSERT_GT(func->getThreadExecutionWidth(), static_cast<uint64_t>(0));
++}
++
++TEST(MPSMetalLibraryExtTest, HalfPrecisionKernel) {
++  const int n = 8;
++  auto x = torch::zeros({n}, at::device(at::kMPS).dtype(at::kHalf));
++  DynamicMetalShaderLibrary lib(R"MTL(
++  #include <metal_stdlib>
++  using namespace metal;
++  kernel void half_fill(device half* t, uint idx [[thread_position_in_grid]]) {
++    t[idx] = (half)idx;
++  }
++  )MTL");
++  auto func = lib.getKernelFunction("half_fill");
++  func->runCommandBlock([&] {
++    func->startEncoding();
++    func->setArg(0, x);
++    func->dispatch(static_cast<uint64_t>(x.numel()));
++  });
++  auto expected = torch::arange(n, at::device(at::kMPS).dtype(at::kHalf));
++  ASSERT_TRUE(x.equal(expected));
++}
++
++TEST(MPSMetalLibraryExtTest, Int32Kernel) {
++  const int n = 8;
++  auto x = torch::zeros({n}, at::device(at::kMPS).dtype(at::kInt));
++  DynamicMetalShaderLibrary lib(R"MTL(
++  kernel void int_fill(device int* t, uint idx [[thread_position_in_grid]]) {
++    t[idx] = (int)idx * 3;
++  }
++  )MTL");
++  auto func = lib.getKernelFunction("int_fill");
++  func->runCommandBlock([&] {
++    func->startEncoding();
++    func->setArg(0, x);
++    func->dispatch(static_cast<uint64_t>(x.numel()));
++  });
++  // expected: [0, 3, 6, 9, 12, 15, 18, 21]
++  auto expected = torch::arange(0, n * 3, 3, at::device(at::kMPS).dtype(at::kInt));
++  ASSERT_TRUE(x.equal(expected));
++}
++
++TEST(MPSMetalLibraryExtTest, IntegerScalarArg) {
++  const int n = 8;
++  const int offset = 5;
++  auto x = torch::zeros({n}, at::device(at::kMPS).dtype(at::kInt));
++  DynamicMetalShaderLibrary lib(R"MTL(
++  kernel void int_scalar(device int* t, constant int& offset,
++                         uint idx [[thread_position_in_grid]]) {
++    t[idx] = (int)idx + offset;
++  }
++  )MTL");
++  auto func = lib.getKernelFunction("int_scalar");
++  func->runCommandBlock([&] {
++    func->startEncoding();
++    func->setArg(0, x);
++    func->setArg(1, offset);
++    func->dispatch(static_cast<uint64_t>(x.numel()));
++  });
++  // expected: [5, 6, 7, 8, 9, 10, 11, 12]
++  auto expected = torch::arange(offset, offset + n,
++                                at::device(at::kMPS).dtype(at::kInt));
++  ASSERT_TRUE(x.equal(expected));
++}
+diff --git a/aten/src/ATen/test/mps_test_print.cpp b/aten/src/ATen/test/mps_test_print.cpp
+index 388f0b6f19b..47d8fe4cc55 100644
+--- a/aten/src/ATen/test/mps_test_print.cpp
++++ b/aten/src/ATen/test/mps_test_print.cpp
+@@ -32,3 +32,9 @@ TEST(MPSPrintTest, PrintFloatScalar) {
+   ss << torch::ones({}, at::device(at::kMPS));
+   ASSERT_TRUE(ss.str() == "1\n[ MPSFloatType{} ]") << " got " << ss.str();
+ }
++
++TEST(MPSPrintTest, PrintBFloat16Matrix) {
++  std::stringstream ss;
++  ss << torch::randn({2, 2}, at::device(at::kMPS).dtype(at::kBFloat16));
++  ASSERT_TRUE(ends_with(ss.str(), "[ MPSBFloat16Type{2,2} ]")) << " got " << ss.str();
++}
