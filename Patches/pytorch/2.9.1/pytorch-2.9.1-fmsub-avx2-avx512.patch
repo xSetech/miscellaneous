@@ -1,0 +1,76 @@
+commit 07557045e753e98548eac3f5cb7f4baed536c6f3 (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 03:59:49 2026 -0800
+
+    fix: add fmsub<Half> specializations for AVX2 and AVX512
+    
+    fmadd<Half> already had platform-specific specializations in
+    vec256_half.h and vec512_bfloat16.h that compute the multiply-add
+    in float precision via _mm256_fmadd_ps / _mm512_fmadd_ps. fmsub<Half>
+    had no such specializations, causing two problems:
+    
+    1. The generic primary template (a * b - c) was instantiated, which
+       double-rounds through Half on the intermediate product.
+    2. On AVX2/AVX512, Vectorized<Half> is Vectorized16<Half> whose
+       operator[] is explicitly deleted, causing a compile error when
+       the primary template body is instantiated.
+    
+    Add matching fmsub<Half> specializations using _mm256_fmsub_ps and
+    _mm512_fmsub_ps, consistent with the existing fmadd<Half> pattern.
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/aten/src/ATen/cpu/vec/vec256/vec256_half.h b/aten/src/ATen/cpu/vec/vec256/vec256_half.h
+index 3022d265b39..02eb0826cac 100644
+--- a/aten/src/ATen/cpu/vec/vec256/vec256_half.h
++++ b/aten/src/ATen/cpu/vec/vec256/vec256_half.h
+@@ -263,6 +263,22 @@ Vectorized<Half> inline fmadd(
+   return cvtfp32_fp16(o1, o2);
+ }
+ 
++template <>
++Vectorized<Half> inline fmsub(
++    const Vectorized<Half>& a,
++    const Vectorized<Half>& b,
++    const Vectorized<Half>& c) {
++  __m256 a_lo, a_hi;
++  __m256 b_lo, b_hi;
++  __m256 c_lo, c_hi;
++  cvtfp16_fp32(__m256i(a), a_lo, a_hi);
++  cvtfp16_fp32(__m256i(b), b_lo, b_hi);
++  cvtfp16_fp32(__m256i(c), c_lo, c_hi);
++  auto o1 = _mm256_fmsub_ps(a_lo, b_lo, c_lo);
++  auto o2 = _mm256_fmsub_ps(a_hi, b_hi, c_hi);
++  return cvtfp32_fp16(o1, o2);
++}
++
+ CONVERT_VECTORIZED_INIT(Half, half)
+ LOAD_FP32_VECTORIZED_INIT(Half, fp16)
+ 
+diff --git a/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h b/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
+index 844b3b1fcc1..f7819a43eed 100644
+--- a/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
++++ b/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
+@@ -1847,6 +1847,22 @@ Vectorized<Half> inline fmadd(
+   return cvtfp32_fp16(o1, o2);
+ }
+ 
++template <>
++Vectorized<Half> inline fmsub(
++    const Vectorized<Half>& a,
++    const Vectorized<Half>& b,
++    const Vectorized<Half>& c) {
++  __m512 a_lo, a_hi;
++  __m512 b_lo, b_hi;
++  __m512 c_lo, c_hi;
++  cvtfp16_fp32(__m512i(a), a_lo, a_hi);
++  cvtfp16_fp32(__m512i(b), b_lo, b_hi);
++  cvtfp16_fp32(__m512i(c), c_lo, c_hi);
++  auto o1 = _mm512_fmsub_ps(a_lo, b_lo, c_lo);
++  auto o2 = _mm512_fmsub_ps(a_hi, b_hi, c_hi);
++  return cvtfp32_fp16(o1, o2);
++}
++
+ #define CONVERT_VECTORIZED_INIT(type, name)                     \
+   inline std::tuple<Vectorized<float>, Vectorized<float>>       \
+       convert_##name##_float(const Vectorized<type>& a) {       \
