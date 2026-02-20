@@ -1,0 +1,68 @@
+commit cd8c9197c33e49f16ee8ef126a2e95b13765042d (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 00:23:55 2026 -0800
+
+    build: apply staging/copy_if_different pattern to caffe2 protoc commands
+    
+    Mirror the same __protoc_staging approach used for ONNX in the
+    caffe2_protobuf_generate_cpp_py function, so that if this code path is
+    activated the same stable-output behaviour holds: protoc C++ output is
+    patched in a scratch directory and promoted to the real location only
+    when content differs.
+    
+    Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/cmake/ProtoBuf.cmake b/cmake/ProtoBuf.cmake
+index 54c68d083bc..b3a2a273c43 100644
+--- a/cmake/ProtoBuf.cmake
++++ b/cmake/ProtoBuf.cmake
+@@ -162,6 +162,15 @@ function(caffe2_protobuf_generate_cpp_py srcs_var hdrs_var python_var)
+     # Add TORCH_API prefix to protobuf classes and methods in all cases
+     set(DLLEXPORT_STR "dllexport_decl=TORCH_API:")
+ 
++    # Stage protoc C++ output in a scratch directory so that the real
++    # outputs are only touched when their content actually changes.
++    # Combined with restat=1, this prevents unnecessary downstream
++    # recompilation when the proto files haven't changed.
++    set(_STAGING_DIR "${PROJECT_BINARY_DIR}/__protoc_staging")
++    file(RELATIVE_PATH _rel_dir "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
++    set(_staged_pb_cc "${_STAGING_DIR}/${_rel_dir}/${fil_we}.pb.cc")
++    set(_staged_pb_h "${_STAGING_DIR}/${_rel_dir}/${fil_we}.pb.h")
++
+     # Note: the following depends on PROTOBUF_PROTOC_EXECUTABLE. This
+     # is done to make sure protoc is built before attempting to
+     # generate sources if we're using protoc from the third_party
+@@ -178,13 +187,16 @@ function(caffe2_protobuf_generate_cpp_py srcs_var hdrs_var python_var)
+                "${CMAKE_CURRENT_BINARY_DIR}/${fil_we}_pb2.py"
+         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
+-        COMMAND ${CAFFE2_PROTOC_EXECUTABLE} -I${PROJECT_SOURCE_DIR} --cpp_out=${DLLEXPORT_STR}${PROJECT_BINARY_DIR} ${abs_fil}
++        COMMAND ${CMAKE_COMMAND} -E make_directory "${_STAGING_DIR}/${_rel_dir}"
++        COMMAND ${CAFFE2_PROTOC_EXECUTABLE} -I${PROJECT_SOURCE_DIR} --cpp_out=${DLLEXPORT_STR}${_STAGING_DIR} ${abs_fil}
+         COMMAND ${CAFFE2_PROTOC_EXECUTABLE} -I${PROJECT_SOURCE_DIR} --python_out "${PROJECT_BINARY_DIR}" ${abs_fil}
+ 
+         # If we remove all reference to these pb.h files from external
+         # libraries and binaries this rewrite can be removed.
+-        COMMAND ${CMAKE_COMMAND} -DFILENAME=${CMAKE_CURRENT_BINARY_DIR}/${fil_we}.pb.h -DNAMESPACES=caffe\;caffe2\;onnx\;torch -P ${PROJECT_SOURCE_DIR}/cmake/ProtoBufPatch.cmake
++        COMMAND ${CMAKE_COMMAND} -DFILENAME=${_staged_pb_h} -DNAMESPACES=caffe\;caffe2\;onnx\;torch -P ${PROJECT_SOURCE_DIR}/cmake/ProtoBufPatch.cmake
+ 
++        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_staged_pb_h}" "${CMAKE_CURRENT_BINARY_DIR}/${fil_we}.pb.h"
++        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_staged_pb_cc}" "${CMAKE_CURRENT_BINARY_DIR}/${fil_we}.pb.cc"
+         DEPENDS ${CAFFE2_PROTOC_EXECUTABLE} ${abs_fil}
+         COMMENT "Running C++/Python protocol buffer compiler on ${fil}" VERBATIM )
+     else()
+@@ -194,9 +206,12 @@ function(caffe2_protobuf_generate_cpp_py srcs_var hdrs_var python_var)
+                "${CMAKE_CURRENT_BINARY_DIR}/${fil_we}_pb2.py"
+         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
+-        COMMAND ${CAFFE2_PROTOC_EXECUTABLE} -I${PROJECT_SOURCE_DIR} --cpp_out=${DLLEXPORT_STR}${PROJECT_BINARY_DIR} ${abs_fil}
++        COMMAND ${CMAKE_COMMAND} -E make_directory "${_STAGING_DIR}/${_rel_dir}"
++        COMMAND ${CAFFE2_PROTOC_EXECUTABLE} -I${PROJECT_SOURCE_DIR} --cpp_out=${DLLEXPORT_STR}${_STAGING_DIR} ${abs_fil}
+         COMMAND ${CAFFE2_PROTOC_EXECUTABLE} -I${PROJECT_SOURCE_DIR} --python_out "${PROJECT_BINARY_DIR}" ${abs_fil}
+-        COMMAND ${CMAKE_COMMAND} -DFILENAME=${CMAKE_CURRENT_BINARY_DIR}/${fil_we}.pb.h -DNAMESPACES=caffe\;caffe2\;onnx\;torch -DSYSTEM_PROTOBUF=YES -P ${PROJECT_SOURCE_DIR}/cmake/ProtoBufPatch.cmake
++        COMMAND ${CMAKE_COMMAND} -DFILENAME=${_staged_pb_h} -DNAMESPACES=caffe\;caffe2\;onnx\;torch -DSYSTEM_PROTOBUF=YES -P ${PROJECT_SOURCE_DIR}/cmake/ProtoBufPatch.cmake
++        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_staged_pb_h}" "${CMAKE_CURRENT_BINARY_DIR}/${fil_we}.pb.h"
++        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_staged_pb_cc}" "${CMAKE_CURRENT_BINARY_DIR}/${fil_we}.pb.cc"
+         DEPENDS ${CAFFE2_PROTOC_EXECUTABLE} ${abs_fil}
+         COMMENT "Running C++/Python protocol buffer compiler on ${fil}" VERBATIM )
+     endif()

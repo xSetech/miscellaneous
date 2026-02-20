@@ -1,0 +1,75 @@
+commit bdc4a9fe113489ff77802df3b497146bdb417e4c (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 00:26:10 2026 -0800
+
+    build: stage protoc output to prevent spurious downstream recompilation
+    
+    Route protoc's --cpp_out to a __protoc_staging scratch directory and run
+    ProtoBufPatch.cmake there, then use cmake -E copy_if_different to update
+    the real .pb.cc/.pb.h only when content has actually changed. Combined
+    with the restat=1 already present on these build edges, this prevents
+    ninja from triggering recompilation of all ONNX proto consumers on every
+    build where the .proto inputs are unchanged.
+    
+    Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8b5af3038..dfe2c12d5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -388,12 +388,21 @@ function(RELATIVE_PROTOBUF_GENERATE_CPP NAME SRCS HDRS ROOT_DIR DEPEND)
+                        COMMENT "Running gen_proto.py on ${INFILE}"
+                        VERBATIM)
+     message("Generated: ${GENERATED_PROTO}")
++
++    # Stage protoc C++ output in a scratch directory so that the real
++    # outputs are only touched when their content actually changes.
++    # Combined with the restat=1 that CMake puts on these edges, this
++    # prevents unnecessary downstream recompilation.
++    set(_STAGING_DIR "${CMAKE_CURRENT_BINARY_DIR}/__protoc_staging")
++    set(_STAGING_PB_HEADER "${_STAGING_DIR}/${REL_DIR}/${GENERATED_FILE_WE}.pb.h")
++    set(_STAGING_PB_SRC "${_STAGING_DIR}/${REL_DIR}/${GENERATED_FILE_WE}.pb.cc")
++
+     set(PROTOC_ARGS
+         ${GENERATED_PROTO}
+         -I
+         ${CMAKE_CURRENT_BINARY_DIR}
+         --cpp_out
+-        ${ONNX_DLLEXPORT_STR}${CMAKE_CURRENT_BINARY_DIR})
++        ${ONNX_DLLEXPORT_STR}${_STAGING_DIR})
+     if(ONNX_BUILD_PYTHON)
+       list(APPEND PROTOC_ARGS --python_out)
+       if(ONNX_GEN_PB_TYPE_STUBS)
+@@ -408,20 +417,30 @@ function(RELATIVE_PROTOBUF_GENERATE_CPP NAME SRCS HDRS ROOT_DIR DEPEND)
+     if(ONNX_PROTO_POST_BUILD_SCRIPT)
+       add_custom_command(
+         OUTPUT "${OUTPUT_PB_SRC}" "${OUTPUT_PB_HEADER}"
++        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGING_DIR}/${REL_DIR}"
+         COMMAND "${ONNX_PROTOC_EXECUTABLE}" ARGS ${PROTOC_ARGS}
+-        COMMAND "${CMAKE_COMMAND}" -DFILENAME=${OUTPUT_PB_HEADER}
++        COMMAND "${CMAKE_COMMAND}" -DFILENAME=${_STAGING_PB_HEADER}
+                 -DNAMESPACES=${ONNX_NAMESPACE} -P
+                 ${ONNX_PROTO_POST_BUILD_SCRIPT}
+-        COMMAND "${CMAKE_COMMAND}" -DFILENAME=${OUTPUT_PB_SRC}
++        COMMAND "${CMAKE_COMMAND}" -DFILENAME=${_STAGING_PB_SRC}
+                 -DNAMESPACES=${ONNX_NAMESPACE} -P
+                 ${ONNX_PROTO_POST_BUILD_SCRIPT}
++        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
++                "${_STAGING_PB_HEADER}" "${OUTPUT_PB_HEADER}"
++        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
++                "${_STAGING_PB_SRC}" "${OUTPUT_PB_SRC}"
+         DEPENDS ${GENERATED_PROTO} ${DEPEND}
+         COMMENT "Running C++ protocol buffer compiler on ${GENERATED_PROTO}"
+         VERBATIM)
+     else()
+       add_custom_command(
+         OUTPUT "${OUTPUT_PB_SRC}" "${OUTPUT_PB_HEADER}"
++        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGING_DIR}/${REL_DIR}"
+         COMMAND "${ONNX_PROTOC_EXECUTABLE}" ARGS ${PROTOC_ARGS}
++        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
++                "${_STAGING_PB_HEADER}" "${OUTPUT_PB_HEADER}"
++        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
++                "${_STAGING_PB_SRC}" "${OUTPUT_PB_SRC}"
+         DEPENDS ${GENERATED_PROTO} ${DEPEND}
+         COMMENT "Running C++ protocol buffer compiler on ${GENERATED_PROTO}"
+         VERBATIM)
