@@ -1,0 +1,88 @@
+commit af516f5afef8274b69c0030384cb5d33ae17d11c (HEAD)
+Author: Seth Junot <xsetech@gmail.com>
+Date:   Fri Feb 20 14:45:49 2026 -0800
+
+    fix: extend BFloat16 fmadd/fmsub float-promotion to DEFAULT and AVX512
+
+    Follow-up to the AVX2 fix:
+
+    1. vec_base.h (DEFAULT path): extend the existing Half float-promotion
+       constexpr-if branch to also cover BFloat16, so the scalar element loop
+       computes float(a)*float(b) ± float(c) with a single final rounding to
+       BFloat16, matching the scalar test reference (OpMathType<BFloat16>::type
+       = float) and all platform specializations.
+
+    2. vec512_bfloat16.h (AVX512 path):
+       - Fix fmadd<BFloat16>: replace _mm512_fmadd_ps with
+         _mm512_add_ps(_mm512_mul_ps(...), ...) for the same reason as the
+         AVX2 fix — single-rounding FMA can cross a BFloat16 boundary.
+       - Add fmsub<BFloat16>: was missing entirely, causing the vec_base.h
+         fallback to be instantiated; that fallback uses operator[], which is
+         deleted on AVX512 Vectorized<BFloat16>, producing a compile error.
+         New specialization uses _mm512_sub_ps(_mm512_mul_ps(...), ...).
+
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h b/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
+index f7819a43eed..ddb47e7be19 100644
+--- a/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
++++ b/aten/src/ATen/cpu/vec/vec512/vec512_bfloat16.h
+@@ -1082,8 +1082,28 @@ Vectorized<BFloat16> inline fmadd(
+   cvtbf16_fp32(__m512i(a), a_lo, a_hi);
+   cvtbf16_fp32(__m512i(b), b_lo, b_hi);
+   cvtbf16_fp32(__m512i(c), c_lo, c_hi);
+-  auto o1 = _mm512_fmadd_ps(a_lo, b_lo, c_lo);
+-  auto o2 = _mm512_fmadd_ps(a_hi, b_hi, c_hi);
++  // Use separate multiply + add (not fused) to match the scalar reference
++  // semantics: both compute in float32 with two distinct roundings.
++  // Using _mm512_fmadd_ps (single-rounding FMA) can shift the float32 result
++  // enough to cross a BFloat16 rounding boundary and produce a different value.
++  auto o1 = _mm512_add_ps(_mm512_mul_ps(a_lo, b_lo), c_lo);
++  auto o2 = _mm512_add_ps(_mm512_mul_ps(a_hi, b_hi), c_hi);
++  return cvtfp32_bf16(o1, o2);
++}
++
++template <>
++Vectorized<BFloat16> inline fmsub(
++    const Vectorized<BFloat16>& a,
++    const Vectorized<BFloat16>& b,
++    const Vectorized<BFloat16>& c) {
++  __m512 a_lo, a_hi;
++  __m512 b_lo, b_hi;
++  __m512 c_lo, c_hi;
++  cvtbf16_fp32(__m512i(a), a_lo, a_hi);
++  cvtbf16_fp32(__m512i(b), b_lo, b_hi);
++  cvtbf16_fp32(__m512i(c), c_lo, c_hi);
++  auto o1 = _mm512_sub_ps(_mm512_mul_ps(a_lo, b_lo), c_lo);
++  auto o2 = _mm512_sub_ps(_mm512_mul_ps(a_hi, b_hi), c_hi);
+   return cvtfp32_bf16(o1, o2);
+ }
+
+diff --git a/aten/src/ATen/cpu/vec/vec_base.h b/aten/src/ATen/cpu/vec/vec_base.h
+index dd338145b47..d7650244854 100644
+--- a/aten/src/ATen/cpu/vec/vec_base.h
++++ b/aten/src/ATen/cpu/vec/vec_base.h
+@@ -1242,8 +1242,9 @@ inline Vectorized<T> fmadd(
+     const Vectorized<T>& a,
+     const Vectorized<T>& b,
+     const Vectorized<T>& c) {
+-  if constexpr (std::is_same_v<T, c10::Half>) {
+-    // Compute in float to avoid double-rounding: Half(a*b) then Half(ab+c).
++  if constexpr (std::is_same_v<T, c10::Half> ||
++                std::is_same_v<T, c10::BFloat16>) {
++    // Compute in float to avoid double-rounding: T(a*b) then T(ab+c).
+     // Platform-specific specializations (AVX2, NEON, etc.) take precedence.
+     Vectorized<T> result;
+     for (int i = 0; i != Vectorized<T>::size(); i++) {
+@@ -1273,8 +1274,9 @@ inline Vectorized<T> fmsub(
+     const Vectorized<T>& a,
+     const Vectorized<T>& b,
+     const Vectorized<T>& c) {
+-  if constexpr (std::is_same_v<T, c10::Half>) {
+-    // Compute in float to avoid double-rounding: Half(a*b) then Half(ab-c).
++  if constexpr (std::is_same_v<T, c10::Half> ||
++                std::is_same_v<T, c10::BFloat16>) {
++    // Compute in float to avoid double-rounding: T(a*b) then T(ab-c).
+     // Platform-specific specializations (AVX2, NEON, etc.) take precedence.
+     Vectorized<T> result;
+     for (int i = 0; i != Vectorized<T>::size(); i++) {
