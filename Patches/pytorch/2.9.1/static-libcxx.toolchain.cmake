@@ -20,3 +20,11 @@ set(CMAKE_MODULE_LINKER_FLAGS_INIT "-nostdlib++ -Wl,-no_implicit_dylibs")
 set(CMAKE_CXX_STANDARD_LIBRARIES
     "${STATIC_LIBCXX} ${STATIC_LIBCXXABI}"
     CACHE STRING "" FORCE)
+
+# caffe2/CMakeLists.txt unconditionally calls target_link_libraries(foo stdc++)
+# for all non-MSVC builds, which adds -lstdc++ (GCC's stdlib) even when building
+# with Clang/libc++.  By defining an INTERFACE target named "stdc++" immediately
+# after the top-level project() call, CMake resolves that name to this empty
+# target instead of searching for the system library, making the call a no-op.
+set(CMAKE_PROJECT_Torch_INCLUDE
+    "${CMAKE_CURRENT_LIST_DIR}/static-libcxx-intercept.cmake")
