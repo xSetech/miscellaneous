@@ -18,6 +18,7 @@ set -euo pipefail
 # --- Parse arguments ---
 BRANCH="h5dump-history"
 PATTERNS=()
+MAX_JOBS="${MAX_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -39,6 +40,7 @@ fi
 
 echo "Branch:   $BRANCH"
 echo "Patterns: ${PATTERNS[*]}"
+echo "Parallel: $MAX_JOBS jobs"
 echo ""
 
 # --- Gather all commits, oldest first ---
@@ -58,16 +60,18 @@ if git rev-parse --verify "$BRANCH" &>/dev/null; then
     exit 1
 fi
 
-# --- Set up a worktree ---
-WORKDIR=$(gmktemp -d)
-trap 'git worktree remove --force "$WORKDIR" 2>/dev/null; rm -rf "$WORKDIR"' EXIT
+# --- Create a single temp directory for the entire run ---
+TMPDIR_ROOT=$(mktemp -d)
+WORKDIR=$(mktemp -d)
+trap 'git worktree remove --force "$WORKDIR" 2>/dev/null; rm -rf "$WORKDIR" "$TMPDIR_ROOT"' EXIT
 
-# Create orphan branch to start clean
+echo "Temp dir: $TMPDIR_ROOT"
+
+# --- Set up a worktree ---
 git worktree add --detach "$WORKDIR" "${ALL_COMMITS[0]}" --quiet
 pushd "$WORKDIR" > /dev/null
 git checkout --orphan "$BRANCH" --quiet
 git reset --hard --quiet
-
 popd > /dev/null
 
 # --- Helper: find matching files in a tree ---
@@ -79,9 +83,41 @@ find_matching_files() {
             [ -n "$f" ] && result+=("$f")
         done < <(git ls-tree -r --name-only "$commit" | grep -E "$(echo "$pat" | sed 's/\./\\./g; s/\*/.*/g')$" || true)
     done
-    # Deduplicate
     printf '%s\n' "${result[@]}" | sort -u
 }
+
+# --- Helper: dump one file (called in parallel) ---
+# Args: commit src_path dump_output_path tmpdir
+dump_one_file() {
+    local commit="$1"
+    local src_path="$2"
+    local dump_path="$3"
+    local tmpdir="$4"
+
+    local basename
+    basename=$(basename "$src_path")
+    # Use a fixed name based on the source path to get stable h5dump headers
+    local stable_name="$tmpdir/$basename"
+
+    local dump_dir
+    dump_dir=$(dirname "$dump_path")
+    [ "$dump_dir" != "." ] && mkdir -p "$dump_dir"
+
+    if git show "$commit:$src_path" > "$stable_name" 2>/dev/null; then
+        if h5dump "$stable_name" > "$dump_path" 2>&1; then
+            # Replace the temp path in the header with just the basename
+            # h5dump writes: HDF5 "/path/to/tmp/file.med" {
+            # We want:       HDF5 "file.med" {
+            sed -i "1s|^HDF5 \".*\"|HDF5 \"$basename\"|" "$dump_path"
+        else
+            echo "# h5dump failed for $src_path" > "$dump_path"
+        fi
+        rm -f "$stable_name"
+    fi
+}
+
+export -f dump_one_file
+export TMPDIR_ROOT
 
 # --- Main loop ---
 pushd "$WORKDIR" > /dev/null
@@ -96,9 +132,8 @@ for i in "${!ALL_COMMITS[@]}"; do
 
     NUM=$((i+1))
 
-    # Cherry-pick the commit (no-commit so we can augment it)
+    # Checkout this commit's tree
     git read-tree --reset -u "$COMMIT" 2>/dev/null || {
-        # Fallback: hard checkout
         git rm -rf --quiet . 2>/dev/null || true
         git read-tree "$COMMIT"
         git checkout-index -a -f 2>/dev/null || true
@@ -113,33 +148,29 @@ for i in "${!ALL_COMMITS[@]}"; do
     DUMP_COUNT=0
 
     if [ ${#MATCHED_FILES[@]} -gt 0 ]; then
-        for MF in "${MATCHED_FILES[@]}"; do
-            DUMP_OUT="${MF}.h5dump"
-            DUMP_DIR=$(dirname "$DUMP_OUT")
-            [ "$DUMP_DIR" != "." ] && mkdir -p "$DUMP_DIR"
+        # Create a per-commit temp subdirectory so parallel jobs don't collide
+        COMMIT_TMPDIR="$TMPDIR_ROOT/$COMMIT"
+        mkdir -p "$COMMIT_TMPDIR"
 
-            # Extract and dump
-            TMPFILE=$(gmktemp --suffix=".$(basename "$MF")")
-            if git show "$COMMIT:$MF" > "$TMPFILE" 2>/dev/null; then
-                if h5dump "$TMPFILE" > "$DUMP_OUT" 2>&1; then
-                    DUMP_COUNT=$((DUMP_COUNT + 1))
-                else
-                    echo "# h5dump failed for $MF" > "$DUMP_OUT"
-                    DUMP_COUNT=$((DUMP_COUNT + 1))
-                fi
-            fi
-            rm -f "$TMPFILE"
-        done
+        # Run h5dump in parallel
+        printf '%s\n' "${MATCHED_FILES[@]}" | \
+            xargs -P "$MAX_JOBS" -I{} bash -c \
+                'dump_one_file "$1" "$2" "$3" "$4"' _ \
+                "$COMMIT" '{}' '{}.h5dump' "$COMMIT_TMPDIR"
+
+        DUMP_COUNT=${#MATCHED_FILES[@]}
+
+        # Clean up per-commit temp dir
+        rm -rf "$COMMIT_TMPDIR"
     fi
 
-    # Stage everything (original tree + dump files)
+    # Stage everything
     git add -A
 
-    # Progress line
+    # Progress
     if [ $DUMP_COUNT -gt 0 ]; then
         echo "[$NUM/$TOTAL] $SHORT: $ORIG_MSG  (+$DUMP_COUNT h5dump files)"
     else
-        # Print progress less frequently for commits with no matching files
         if (( NUM % 50 == 0 )) || (( NUM == TOTAL )); then
             echo "[$NUM/$TOTAL] $SHORT: $ORIG_MSG"
         fi
@@ -164,5 +195,4 @@ echo "  git log $BRANCH                                # full history"
 echo "  git log $BRANCH -- '*.h5dump'                  # only h5dump changes"
 echo "  git log -p $BRANCH -- '*.h5dump'               # h5dump diffs over time"
 echo "  git diff $BRANCH~1 $BRANCH -- '*.h5dump'       # latest h5dump diff"
-echo "  git log --name-only $BRANCH -- '*.med'          # which .med files changed"
 
