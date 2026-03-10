@@ -1,0 +1,11 @@
+[project]
+name = "mnemo-report"
+version = "1.0.0"
+description = "Count IA-32 instruction mnemonics from objdump output"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+
+[tool.mypy]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
