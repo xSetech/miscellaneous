@@ -1,0 +1,65 @@
+Preserve timestamps in CK SDPA codegen to avoid unnecessary rebuilds
+
+The .cpp to .hip rename and sed-based patching unconditionally touched
+every generated kernel file on cmake reconfigure, invalidating all
+~6000 CK kernel objects even when content was unchanged. Use cmp -s
+to skip writes when the output already matches.
+
+diff --git a/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt b/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt
+index 2fe37e44a4b..245a0f4a88f 100644
+--- a/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt
++++ b/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt
+@@ -103,11 +103,20 @@ if(ret AND NOT ret EQUAL 0)
+   message( FATAL_ERROR "CK Tile FMHA FAILED to change make_kernel to make_kernel_pt for the bwd pass")
+ endif()
+
+-# Change file extensions to .hip
+-execute_process(COMMAND bash -c "for file in ${CMAKE_CURRENT_LIST_DIR}/*.cpp; do mv -- \"$file\" \"\${file%.cpp}.hip\"; done"
++# Change file extensions to .hip (only if content changed, to preserve timestamps)
++execute_process(COMMAND bash -c "
++for file in ${CMAKE_CURRENT_LIST_DIR}/*.cpp; do
++  [ -f \"$file\" ] || continue
++  hip=\"\${file%.cpp}.hip\"
++  if [ -f \"$hip\" ] && cmp -s \"$file\" \"$hip\"; then
++    rm -- \"$file\"
++  else
++    mv -- \"$file\" \"$hip\"
++  fi
++done"
+   RESULT_VARIABLE ret
+ )
+
+ if(ret AND NOT ret EQUAL 0)
+-  message( FATAL_ERROR "CK Tile FMHA FAILED to change the generated instances extensions from .cpp to .hpp")
++  message( FATAL_ERROR "CK Tile FMHA FAILED to change the generated instances extensions from .cpp to .hip")
+ endif()
+diff --git a/aten/src/ATen/native/transformers/hip/flash_attn/ck/add_make_kernel_pt.sh b/aten/src/ATen/native/transformers/hip/flash_attn/ck/add_make_kernel_pt.sh
+index 849613f7956..b44c343c591 100755
+--- a/aten/src/ATen/native/transformers/hip/flash_attn/ck/add_make_kernel_pt.sh
++++ b/aten/src/ATen/native/transformers/hip/flash_attn/ck/add_make_kernel_pt.sh
+@@ -19,11 +19,20 @@ fi
+ while IFS= read -r file; do
+     # Check if the file exists in the current directory
+     if [ -f "$file" ]; then
+-        # Use sed to replace "make_kernel" with "make_kernel_pt" in place
+-        sed -i 's/make_kernel/make_kernel_pt/g' "$file"
+-        sed -i 's/\#include \"fmha_fwd.hpp\"/\#include \"fmha_fwd.hpp\"\n\#include \"launch_kernel_pt.hpp\"/g' "$file"
+-        sed -i 's/\#include \"fmha_bwd.hpp\"/\#include \"fmha_bwd.hpp\"\n\#include \"launch_kernel_pt.hpp\"/g' "$file"
+-        echo "Updated: $file"
++        # Apply substitutions to a temp file; only overwrite if content changed
++        tmp="$(mktemp)"
++        sed \
++          -e 's/make_kernel/make_kernel_pt/g' \
++          -e 's/\#include \"fmha_fwd.hpp\"/\#include \"fmha_fwd.hpp\"\n\#include \"launch_kernel_pt.hpp\"/g' \
++          -e 's/\#include \"fmha_bwd.hpp\"/\#include \"fmha_bwd.hpp\"\n\#include \"launch_kernel_pt.hpp\"/g' \
++          "$file" > "$tmp"
++        if cmp -s "$file" "$tmp"; then
++            rm "$tmp"
++            echo "Unchanged: $file"
++        else
++            mv "$tmp" "$file"
++            echo "Updated: $file"
++        fi
+     else
+         echo "Skipping: $file (not found)"
+     fi

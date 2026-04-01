@@ -1,0 +1,96 @@
+Use PYTHON_EXECUTABLE instead of hardcoded python3 in CK SDPA CMake
+
+diff --git a/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt b/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt
+index 819880cf3bc..2fe37e44a4b 100644
+--- a/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt
++++ b/aten/src/ATen/native/transformers/hip/flash_attn/ck/CMakeLists.txt
+@@ -1,6 +1,6 @@
+ # generate a list of kernels, but not actually emit files at config stage
+ execute_process(
+-  COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
++  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
+   --api fwd --receipt 4 --list_blobs ${CMAKE_CURRENT_LIST_DIR}/fwd_blob_list.txt
+   RESULT_VARIABLE ret
+ )
+@@ -10,7 +10,7 @@ if(ret AND NOT ret EQUAL 0)
+ endif()
+
+ execute_process(
+-  COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
++  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
+   --api fwd_splitkv --receipt 4 --list_blobs ${CMAKE_CURRENT_LIST_DIR}/fwd_splitkv_blob_list.txt
+   RESULT_VARIABLE ret
+ )
+@@ -20,7 +20,7 @@ if(ret AND NOT ret EQUAL 0)
+ endif()
+
+ execute_process(
+-  COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
++  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
+   --api fwd_appendkv --receipt 4 --list_blobs ${CMAKE_CURRENT_LIST_DIR}/fwd_appendkv_blob_list.txt
+   RESULT_VARIABLE ret
+ )
+@@ -30,7 +30,7 @@ if(ret AND NOT ret EQUAL 0)
+ endif()
+
+ execute_process(
+-  COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
++  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py
+   --api bwd --receipt 4 --list_blobs ${CMAKE_CURRENT_LIST_DIR}/bwd_blob_list.txt
+   RESULT_VARIABLE ret
+ )
+@@ -40,28 +40,28 @@ if(ret AND NOT ret EQUAL 0)
+ endif()
+
+ # Generate the files for both fwd, fwd_splitkv, fwd_appendkv, and bwd
+-execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api fwd --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
++execute_process(COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api fwd --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
+ )
+
+ if(ret AND NOT ret EQUAL 0)
+   message( FATAL_ERROR "CK Tile FMHA FAILED to generate FWD kernels.")
+ endif()
+
+-execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api fwd_splitkv --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
++execute_process(COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api fwd_splitkv --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
+ )
+
+ if(ret AND NOT ret EQUAL 0)
+     message( FATAL_ERROR "CK Tile FMHA FAILED to generate FWD_SPLITKV kernels.")
+ endif()
+
+-execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api fwd_appendkv --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
++execute_process(COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api fwd_appendkv --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
+ )
+
+ if(ret AND NOT ret EQUAL 0)
+     message( FATAL_ERROR "CK Tile FMHA FAILED to generate FWD_APPENDKV kernels.")
+ endif()
+
+-execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api bwd --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
++execute_process(COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/composable_kernel/example/ck_tile/01_fmha/generate.py --api bwd --receipt 4 --output_dir ${CMAKE_CURRENT_LIST_DIR}
+   RESULT_VARIABLE ret
+ )
+
+diff --git a/aten/src/ATen/native/transformers/hip/flash_attn/ck/fav_v3/CMakeLists.txt b/aten/src/ATen/native/transformers/hip/flash_attn/ck/fav_v3/CMakeLists.txt
+index e0eb28652c1..b22e237d6bb 100644
+--- a/aten/src/ATen/native/transformers/hip/flash_attn/ck/fav_v3/CMakeLists.txt
++++ b/aten/src/ATen/native/transformers/hip/flash_attn/ck/fav_v3/CMakeLists.txt
+@@ -3,7 +3,7 @@ include(CMakePrintHelpers)
+ # Generate AITER/CK Asm code
+ execute_process(
+     COMMAND ${CMAKE_COMMAND} -E env "AITER_GPU_ARCHS=gfx942;gfx950"
+-            python3 ${CMAKE_SOURCE_DIR}/third_party/aiter/hsa/codegen.py -m fmha_v3_bwd --output_dir ${CMAKE_CURRENT_LIST_DIR}
++            ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/third_party/aiter/hsa/codegen.py -m fmha_v3_bwd --output_dir ${CMAKE_CURRENT_LIST_DIR}
+     RESULT_VARIABLE ret
+ )
+
+@@ -23,7 +23,7 @@ set(GENERATE_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/generate_aiter_embedded_hsa.py")
+
+ # Generate the embedded HSA header using Python script (much faster than CMake loops)
+ execute_process(
+-    COMMAND python3 ${GENERATE_SCRIPT}
++    COMMAND ${PYTHON_EXECUTABLE} ${GENERATE_SCRIPT}
+             --hsa-dir ${AITER_HSA_DIR}
+             --output ${AITER_EMBEDDED_HSA_HEADER}
+             --subdirs gfx942/fmha_v3_bwd gfx950/fmha_v3_bwd

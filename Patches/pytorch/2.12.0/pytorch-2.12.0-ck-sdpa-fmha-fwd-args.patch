@@ -1,0 +1,98 @@
+Fix fmha_fwd_args initializers for updated composable_kernel submodule
+
+The composable_kernel submodule added new fields to fmha_fwd_args:
+block_scale_seqstart_{q,k}_ptr, {nhead,batch}_stride_{q,k,v}_descale,
+block_scale_size_{q,kv}, and changed drop_seed_offset to a std::variant.
+The aggregate initializers in mha_fwd_ck.hip and mha_varlen_fwd_ck.hip
+were missing these, causing type mismatch build failures.
+
+diff --git a/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_fwd_ck.hip b/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_fwd_ck.hip
+index 441589e70d7..dd9aa2f7ecb 100644
+--- a/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_fwd_ck.hip
++++ b/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_fwd_ck.hip
+@@ -112,6 +112,8 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
+                          nullptr, // seqlen_k_ptr
+                          nullptr, // cu_seqlen_q_ptr
+                          nullptr, // cu_seqlen_k_ptr
++                         nullptr, // block_scale_seqstart_q_ptr
++                         nullptr, // block_scale_seqstart_k_ptr
+                          nullptr, // sink_ptr
+                          seqlen_q,
+                          seqlen_k,
+@@ -136,6 +138,9 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
+                          nhead_stride_randval,
+                          nhead_stride_lse,
+                          nhead_stride_o,
++                         0, // nhead_stride_q_descale
++                         0, // nhead_stride_k_descale
++                         0, // nhead_stride_v_descale
+                          batch_stride_q,
+                          batch_stride_k,
+                          batch_stride_v,
+@@ -143,6 +148,9 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
+                          batch_stride_randval,
+                          batch_stride_lse,
+                          batch_stride_o,
++                         0, // batch_stride_q_descale
++                         0, // batch_stride_k_descale
++                         0, // batch_stride_v_descale
+                          mask.left,
+                          mask.right,
+                          0,                                 // sink_size
+@@ -150,7 +158,10 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
+                          -1,                                // min_seqlen_q
+                          p_dropout,
+                          has_dropout_randval,
+-                         drop_seed_offset};
++                         std::make_pair(static_cast<const void*>(drop_seed_offset.first),
++                                        static_cast<const void*>(drop_seed_offset.second)),
++                         0, // block_scale_size_q
++                         0}; // block_scale_size_kv
+ }
+
+ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+diff --git a/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_varlen_fwd_ck.hip b/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_varlen_fwd_ck.hip
+index 2a9d4899e82..e4510665860 100644
+--- a/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_varlen_fwd_ck.hip
++++ b/aten/src/ATen/native/transformers/hip/flash_attn/ck/mha_varlen_fwd_ck.hip
+@@ -113,6 +113,8 @@ fmha_fwd_args get_ck_fmha_varlen_fwd_args(bool has_lse,
+                          nullptr, // seqlen_k_ptr
+                          nullptr, // cu_seqlen_q_ptr
+                          nullptr, // cu_seqlen_k_ptr
++                         nullptr, // block_scale_seqstart_q_ptr
++                         nullptr, // block_scale_seqstart_k_ptr
+                          nullptr, // sink_ptr
+                          total_q,
+                          total_k,
+@@ -137,6 +139,9 @@ fmha_fwd_args get_ck_fmha_varlen_fwd_args(bool has_lse,
+                          nhead_stride_randval,
+                          nhead_stride_lse,
+                          nhead_stride_o,
++                         0, // nhead_stride_q_descale
++                         0, // nhead_stride_k_descale
++                         0, // nhead_stride_v_descale
+                          batch_stride_q,
+                          batch_stride_k,
+                          batch_stride_v,
+@@ -144,6 +149,9 @@ fmha_fwd_args get_ck_fmha_varlen_fwd_args(bool has_lse,
+                          batch_stride_randval,
+                          batch_stride_lse,
+                          batch_stride_o,
++                         0, // batch_stride_q_descale
++                         0, // batch_stride_k_descale
++                         0, // batch_stride_v_descale
+                          mask.left,
+                          mask.right,
+                          0,             // sink_size
+@@ -151,7 +159,10 @@ fmha_fwd_args get_ck_fmha_varlen_fwd_args(bool has_lse,
+                          -1,                                // min_seqlen_q
+                          p_dropout,
+                          has_dropout_randval,
+-                         drop_seed_offset};
++                         std::make_pair(static_cast<const void*>(drop_seed_offset.first),
++                                        static_cast<const void*>(drop_seed_offset.second)),
++                         0, // block_scale_size_q
++                         0}; // block_scale_size_kv
+ }
+
+ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>

@@ -1,0 +1,268 @@
+Support CMakeUserPresets.json for persistent build configuration
+
+The PyTorch build system now reads CMakeUserPresets.json from the repo
+root during cmake configuration. This allows users to persistently set
+cache variables (like USE_ROCM, USE_CUDA) and environment variables
+(like ROCM_PATH, PYTORCH_ROCM_ARCH) without needing to export env vars
+each session. Real environment variables still take precedence over
+preset values.
+
+Also fixes ninja detection to re-evaluate after preset environment
+variables are loaded.
+
+diff --git a/.gitignore b/.gitignore
+index 5670e404441..cdcbbee473c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -262,6 +262,7 @@ distribute/*
+ *.bin
+ cmake_build
+ .cmake_build
++CMakeUserPresets.json
+ gen
+ .setuptools-cmake-build
+ .pytest_cache
+diff --git a/tools/setup_helpers/cmake.py b/tools/setup_helpers/cmake.py
+index 88f0fe5d309..728c52d2d87 100644
+--- a/tools/setup_helpers/cmake.py
++++ b/tools/setup_helpers/cmake.py
+@@ -60,6 +60,54 @@ if "CMAKE_GENERATOR" in os.environ:
+ CMAKE_MINIMUM_VERSION = Version(CMAKE_MINIMUM_VERSION_STRING)
+
+
++def _load_cmake_user_preset(
++    base_dir: str, preset_name: str | None = None
++) -> tuple[dict[str, str], dict[str, str]]:
++    """Load cache and environment variables from CMakeUserPresets.json.
++
++    Returns (cache_vars, env_vars). Both dicts map variable names to string values.
++    Returns empty dicts if the file does not exist or the preset is not found.
++    """
++    preset_file = os.path.join(base_dir, "CMakeUserPresets.json")
++    if not os.path.isfile(preset_file):
++        return {}, {}
++
++    with open(preset_file) as f:
++        data = json.load(f)
++
++    preset_name = preset_name or os.environ.get("CMAKE_USER_PRESET", "default")
++    presets = data.get("configurePresets", [])
++
++    preset = None
++    for p in presets:
++        if p.get("name") == preset_name:
++            preset = p
++            break
++
++    if preset is None:
++        available = [p.get("name") for p in presets]
++        eprint(
++            f"WARNING: CMakeUserPresets.json does not contain a preset named "
++            f"'{preset_name}'. Available presets: {available}"
++        )
++        return {}, {}
++
++    cache_vars: dict[str, str] = {}
++    for k, v in preset.get("cacheVariables", {}).items():
++        if isinstance(v, dict):
++            # Handle {"type": "BOOL", "value": "ON"} form
++            cache_vars[k] = str(v.get("value", ""))
++        else:
++            cache_vars[k] = str(v)
++
++    env_vars: dict[str, str] = {}
++    for k, v in preset.get("environment", {}).items():
++        if v is not None:
++            env_vars[k] = str(v)
++
++    return cache_vars, env_vars
++
++
+ class CMake:
+     "Manages cmake."
+
+@@ -196,14 +244,19 @@ class CMake:
+                 self.clear_cache()
+                 cmake_cache_file_available = False
+
++        # Re-evaluate ninja usage: the preset may have set CMAKE_GENERATOR.
++        use_ninja = USE_NINJA
++        if my_env.get("CMAKE_GENERATOR", "").lower() == "ninja":
++            use_ninja = bool(shutil.which("ninja"))
++
+         if cmake_cache_file_available and (
+-            not USE_NINJA or os.path.exists(self._ninja_build_file)
++            not use_ninja or os.path.exists(self._ninja_build_file)
+         ):
+             # Everything's in place. Do not rerun.
+             return
+
+         args = []
+-        if USE_NINJA:
++        if use_ninja:
+             # Avoid conflicts in '-G' and the `CMAKE_GENERATOR`
+             os.environ["CMAKE_GENERATOR"] = "Ninja"
+             args.append("-GNinja")
+@@ -244,6 +297,20 @@ class CMake:
+         _mkdir_p(install_dir)
+         _mkdir_p(self.build_dir)
+
++        # Load user-local CMake preset if available. Environment variables from
++        # the preset are back-filled into my_env (real env vars take precedence),
++        # and cache variables are back-filled into build_options after env-derived
++        # options are collected (so env vars still win).
++        preset_cache_vars, preset_env_vars = _load_cmake_user_preset(base_dir)
++        if preset_cache_vars or preset_env_vars:
++            eprint(
++                f"-- CMakeUserPresets.json: loaded {len(preset_cache_vars)} cache "
++                f"variable(s) and {len(preset_env_vars)} environment variable(s)"
++            )
++        for k, v in preset_env_vars.items():
++            if k not in my_env or my_env[k] == "":
++                my_env[k] = v
++
+         # Store build options that are directly stored in environment variables
+         build_options: dict[str, CMakeValue] = {}
+
+@@ -325,6 +392,12 @@ class CMake:
+                 if key not in build_options:
+                     build_options[key] = val
+
++        # Back-fill cache variables from CMakeUserPresets.json. These have lower
++        # priority than environment-derived options collected above.
++        for k, v in preset_cache_vars.items():
++            if k not in build_options:
++                build_options[k] = v
++
+         # The default value cannot be easily obtained in CMakeLists.txt. We set it here.
+         py_lib_path = sysconfig.get_path("purelib")
+         cmake_prefix_path = build_options.get("CMAKE_PREFIX_PATH")
+diff --git a/tools/test/test_cmake.py b/tools/test/test_cmake.py
+index 24a4eb56e8b..1ab87ad5e44 100644
+--- a/tools/test/test_cmake.py
++++ b/tools/test/test_cmake.py
+@@ -1,13 +1,16 @@
+ from __future__ import annotations
+
+ import contextlib
++import json
+ import os
++import tempfile
+ import typing
+ import unittest
+ import unittest.mock
+
+ import tools.setup_helpers.cmake
+ import tools.setup_helpers.env  # noqa: F401 unused but resolves circular import
++from tools.setup_helpers.cmake import _load_cmake_user_preset
+
+
+ if typing.TYPE_CHECKING:
+@@ -85,6 +88,107 @@ class TestCMake(unittest.TestCase):
+         raise AssertionError(f"{subsequence} not found in {sequence}")
+
+
++class TestCMakeUserPresets(unittest.TestCase):
++    def _write_preset(self, tmpdir: str, data: dict[str, object]) -> None:
++        with open(os.path.join(tmpdir, "CMakeUserPresets.json"), "w") as f:
++            json.dump(data, f)
++
++    def test_no_file_returns_empty(self) -> None:
++        with tempfile.TemporaryDirectory() as tmpdir:
++            cache, env = _load_cmake_user_preset(tmpdir)
++            self.assertEqual(cache, {})
++            self.assertEqual(env, {})
++
++    def test_loads_cache_and_env_vars(self) -> None:
++        with tempfile.TemporaryDirectory() as tmpdir:
++            self._write_preset(tmpdir, {
++                "version": 6,
++                "configurePresets": [{
++                    "name": "default",
++                    "cacheVariables": {
++                        "USE_ROCM": "ON",
++                        "USE_CUDA": "OFF",
++                    },
++                    "environment": {
++                        "ROCM_PATH": "/opt/rocm-6.4",
++                        "PYTORCH_ROCM_ARCH": "gfx942",
++                    },
++                }],
++            })
++            cache, env = _load_cmake_user_preset(tmpdir)
++            self.assertEqual(cache, {"USE_ROCM": "ON", "USE_CUDA": "OFF"})
++            self.assertEqual(
++                env, {"ROCM_PATH": "/opt/rocm-6.4", "PYTORCH_ROCM_ARCH": "gfx942"}
++            )
++
++    def test_named_preset(self) -> None:
++        with tempfile.TemporaryDirectory() as tmpdir:
++            self._write_preset(tmpdir, {
++                "version": 6,
++                "configurePresets": [
++                    {"name": "default", "cacheVariables": {"USE_CUDA": "ON"}},
++                    {"name": "rocm", "cacheVariables": {"USE_ROCM": "ON"}},
++                ],
++            })
++            cache, env = _load_cmake_user_preset(tmpdir, preset_name="rocm")
++            self.assertEqual(cache, {"USE_ROCM": "ON"})
++            self.assertEqual(env, {})
++
++    def test_missing_preset_warns_and_returns_empty(self) -> None:
++        with tempfile.TemporaryDirectory() as tmpdir:
++            self._write_preset(tmpdir, {
++                "version": 6,
++                "configurePresets": [
++                    {"name": "cuda", "cacheVariables": {"USE_CUDA": "ON"}},
++                ],
++            })
++            cache, env = _load_cmake_user_preset(tmpdir, preset_name="nonexistent")
++            self.assertEqual(cache, {})
++            self.assertEqual(env, {})
++
++    def test_typed_cache_variable(self) -> None:
++        """CMake presets allow {"type": "BOOL", "value": "ON"} form."""
++        with tempfile.TemporaryDirectory() as tmpdir:
++            self._write_preset(tmpdir, {
++                "version": 6,
++                "configurePresets": [{
++                    "name": "default",
++                    "cacheVariables": {
++                        "USE_ROCM": {"type": "BOOL", "value": "ON"},
++                    },
++                }],
++            })
++            cache, env = _load_cmake_user_preset(tmpdir)
++            self.assertEqual(cache, {"USE_ROCM": "ON"})
++
++    def test_null_env_var_is_skipped(self) -> None:
++        """CMake presets use null to unset an env var; we skip those."""
++        with tempfile.TemporaryDirectory() as tmpdir:
++            self._write_preset(tmpdir, {
++                "version": 6,
++                "configurePresets": [{
++                    "name": "default",
++                    "environment": {"UNSET_ME": None, "KEEP": "val"},
++                }],
++            })
++            cache, env = _load_cmake_user_preset(tmpdir)
++            self.assertEqual(env, {"KEEP": "val"})
++
++    def test_cmake_user_preset_env_override(self) -> None:
++        """CMAKE_USER_PRESET env var selects which preset to use."""
++        with tempfile.TemporaryDirectory() as tmpdir:
++            self._write_preset(tmpdir, {
++                "version": 6,
++                "configurePresets": [
++                    {"name": "default", "cacheVariables": {"A": "1"}},
++                    {"name": "custom", "cacheVariables": {"B": "2"}},
++                ],
++            })
++            with env_var("CMAKE_USER_PRESET", "custom"):
++                cache, _ = _load_cmake_user_preset(tmpdir)
++            self.assertEqual(cache, {"B": "2"})
++
++
+ @contextlib.contextmanager
+ def env_var(key: str, value: str | None) -> Iterator[None]:
+     """Sets/clears an environment variable within a Python context."""
