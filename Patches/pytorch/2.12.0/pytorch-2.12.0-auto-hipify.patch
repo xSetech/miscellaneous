@@ -1,0 +1,99 @@
+Auto-run hipification before CMake configuration
+
+When ROCm is detected, the build system now automatically runs
+tools/amd_build/build_amd.py before CMake configuration. This fixes
+the --cmake-only workflow (and the normal setup.py build path) so
+users no longer need to manually hipify sources before building.
+
+ROCm detection mirrors cmake/public/LoadHIP.cmake: ROCM_PATH env var,
+rocm-sdk CLI, CMakeUserPresets.json, then /opt/rocm as fallback.
+Hipification is skipped if the output files already exist.
+
+diff --git a/tools/build_pytorch_libs.py b/tools/build_pytorch_libs.py
+index 9d43de80f12..792bf6747b1 100644
+--- a/tools/build_pytorch_libs.py
++++ b/tools/build_pytorch_libs.py
+@@ -2,10 +2,12 @@ from __future__ import annotations
+ 
+ import os
+ import platform
++import sys
+ import subprocess
++from pathlib import Path
+ 
+ from .optional_submodules import checkout_nccl
+-from .setup_helpers.cmake import CMake, USE_NINJA
++from .setup_helpers.cmake import CMake, USE_NINJA, _load_cmake_user_preset
+ from .setup_helpers.env import (
+     check_env_flag,
+     check_negative_env_flag,
+@@ -78,6 +80,60 @@ def _create_build_env() -> dict[str, str]:
+     return my_env
+ 
+ 
++_REPO_ROOT = Path(__file__).absolute().parents[1]
++
++
++def _find_rocm_path() -> str:
++    """Return the ROCm installation path, or empty string if not found.
++
++    Mirrors the detection logic in cmake/public/LoadHIP.cmake:
++    ROCM_PATH env var > rocm-sdk CLI > /opt/rocm (or C:/opt/rocm on Windows).
++    Also consults CMakeUserPresets.json as a fallback.
++    """
++    rocm_path = os.environ.get("ROCM_PATH", "")
++    if rocm_path:
++        return rocm_path
++
++    try:
++        result = subprocess.run(
++            ["rocm-sdk", "path", "--root"],
++            capture_output=True,
++            text=True,
++        )
++        if result.returncode == 0 and result.stdout.strip():
++            return result.stdout.strip()
++    except FileNotFoundError:
++        pass
++
++    # Check CMakeUserPresets.json for ROCM_PATH in environment variables
++    # or USE_ROCM in cache variables.
++    _cache, preset_env = _load_cmake_user_preset(str(_REPO_ROOT))
++    if preset_env.get("ROCM_PATH", ""):
++        return preset_env["ROCM_PATH"]
++
++    default = "C:/opt/rocm" if IS_WINDOWS else "/opt/rocm"
++    if os.path.isdir(default):
++        return default
++
++    return ""
++
++
++def _should_hipify() -> bool:
++    if check_negative_env_flag("USE_ROCM"):
++        return False
++    rocm_path = _find_rocm_path()
++    return bool(rocm_path) and os.path.isdir(rocm_path)
++
++
++def _run_hipify() -> None:
++    marker = _REPO_ROOT / "c10" / "hip" / "impl" / "hip_cmake_macros.h.in"
++    if marker.exists():
++        return
++    print("-- Running hipification (ROCm detected)...")
++    build_amd = _REPO_ROOT / "tools" / "amd_build" / "build_amd.py"
++    subprocess.check_call([sys.executable, str(build_amd)])
++
++
+ def build_pytorch(
+     version: str | None,
+     cmake_python_library: str | None,
+@@ -94,6 +150,8 @@ def build_pytorch(
+         and not check_env_flag("USE_SYSTEM_NCCL")
+     ):
+         checkout_nccl()
++    if _should_hipify():
++        _run_hipify()
+     build_test = not check_negative_env_flag("BUILD_TEST")
+     cmake.generate(
+         version, cmake_python_library, build_python, build_test, my_env, rerun_cmake
