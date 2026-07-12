@@ -1,0 +1,76 @@
+set nocompatible
+set encoding=utf-8
+
+" Editing
+set backspace=2
+set noincsearch
+set nowrap
+
+" Indentation
+set expandtab sts=4 ts=4 sw=4 ai
+
+" Display
+set ruler
+set nolist nospell
+"set showmatch
+" Glyphs used when :list is on
+set listchars=tab:»\ ,extends:›,precedes:‹,nbsp:·,trail:·
+
+" Status line
+set laststatus=2
+set statusline+=%f
+set statusline+=\ %y
+set statusline+=\ %r
+set statusline+=%=
+set statusline+=Char:\ 0x%B,
+set statusline+=\ Col:\ %c,
+set statusline+=\ Row:\ %4l\ Tot.\ Lines:\ %4L
+set statusline+=\ (%P)
+set statusline+=\ Modified:\ %m
+
+" Syntax and colours
+filetype plugin on
+" This is largely the cause of performance issues with large files:
+syntax on
+set t_Co=256
+let g:solarized_termcolors=256
+set background=dark
+colorscheme solarized
+
+" These cause terrible performance:
+"set cursorline
+"set foldmethod=marker
+"set foldenable
+"au FileType sh let g:sh_fold_enabled=5
+"au FileType sh let g:is_bash=1
+"au FileType sh set foldmethod=syntax
+
+" :PrettyXML — reformat the buffer as indented XML via xmllint
+function! DoPrettyXML()
+  " save the filetype so we can restore it later
+  let l:origft = &ft
+  set ft=
+  " delete the xml header if it exists. This will
+  " permit us to surround the document with fake tags
+  " without creating invalid xml.
+  1s/<?xml .*?>//e
+  " insert fake tags around the entire document.
+  " This will permit us to pretty-format excerpts of
+  " XML that may contain multiple top-level elements.
+  0put ='<PrettyXML>'
+  $put ='</PrettyXML>'
+  silent %!xmllint --format -
+  " xmllint will insert an <?xml?> header. it's easy enough to delete
+  " if you don't want it.
+  " delete the fake tags
+  2d
+  $d
+  " restore the 'normal' indentation, which is one extra level
+  " too deep due to the extra tags we wrapped around the document.
+  silent %<
+  " back to home
+  1
+  " restore the filetype
+  exe "set ft=" . l:origft
+endfunction
+command! PrettyXML call DoPrettyXML()
