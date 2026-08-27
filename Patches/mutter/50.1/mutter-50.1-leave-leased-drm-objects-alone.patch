@@ -1,0 +1,167 @@
+Leave DRM objects leased to another program out of the compositor's modesets
+
+A connector marked for lease is handed to another program to drive, but every
+mutter update that contains a mode set first clears CRTC_ID on every connector
+of the card, the leased one included, without disabling that connector's CRTC.
+The result is an enabled CRTC with nothing attached, which the kernel refuses
+with "enabled/connectors mismatch", and since an atomic commit is all or
+nothing, the part of the same request that would light the compositor's own
+screens is refused with it. Waking a screen from sleep is such a request, so
+once the leased connector is lit, the desktop cannot come back from a blank
+until a hotplug makes mutter rebuild its state.
+
+Track the objects handed to each lessee and leave them alone when clearing the
+card, so that mutter's requests describe only what it still owns.
+
+Applies to mutter 50.1.
+
+--- a/src/backends/native/meta-kms-impl-device.h
++++ b/src/backends/native/meta-kms-impl-device.h
+@@ -145,6 +145,9 @@
+                                             uint32_t            lessee_id,
+                                             GError            **error);
+ 
++gboolean meta_kms_impl_device_is_object_leased (MetaKmsImplDevice *impl_device,
++                                                uint32_t           object_id);
++
+ gboolean meta_kms_impl_device_list_lessees (MetaKmsImplDevice  *impl_device,
+                                             uint32_t          **out_lessee_ids,
+                                             int                *out_num_lessee_ids,
+--- a/src/backends/native/meta-kms-impl-device.c
++++ b/src/backends/native/meta-kms-impl-device.c
+@@ -128,6 +128,8 @@
+   int sync_file;
+ 
+   gboolean updates_inhibited;
++
++  GHashTable *leased_objects;
+ } MetaKmsImplDevicePrivate;
+ 
+ static void
+@@ -335,6 +337,62 @@
+   return TRUE;
+ }
+ 
++/* Objects handed to a lessee are no longer ours to program.  Which ones those
++ * are is not something the kernel will tell us back, so the ids go in a set as
++ * the lease is created and come out when it ends. */
++static void
++track_leased_objects (MetaKmsImplDevice *impl_device,
++                      uint32_t          *object_ids,
++                      int                n_object_ids,
++                      uint32_t           lessee_id)
++{
++  MetaKmsImplDevicePrivate *priv =
++    meta_kms_impl_device_get_instance_private (impl_device);
++  int i;
++
++  if (!priv->leased_objects)
++    priv->leased_objects = g_hash_table_new (NULL, NULL);
++
++  for (i = 0; i < n_object_ids; i++)
++    {
++      g_hash_table_insert (priv->leased_objects,
++                          GUINT_TO_POINTER (object_ids[i]),
++                          GUINT_TO_POINTER (lessee_id));
++    }
++}
++
++static void
++untrack_leased_objects (MetaKmsImplDevice *impl_device,
++                        uint32_t           lessee_id)
++{
++  MetaKmsImplDevicePrivate *priv =
++    meta_kms_impl_device_get_instance_private (impl_device);
++  GHashTableIter iter;
++  gpointer value;
++
++  if (!priv->leased_objects)
++    return;
++
++  g_hash_table_iter_init (&iter, priv->leased_objects);
++  while (g_hash_table_iter_next (&iter, NULL, &value))
++    {
++      if (GPOINTER_TO_UINT (value) == lessee_id)
++        g_hash_table_iter_remove (&iter);
++    }
++}
++
++gboolean
++meta_kms_impl_device_is_object_leased (MetaKmsImplDevice *impl_device,
++                                       uint32_t           object_id)
++{
++  MetaKmsImplDevicePrivate *priv =
++    meta_kms_impl_device_get_instance_private (impl_device);
++
++  return priv->leased_objects &&
++         g_hash_table_contains (priv->leased_objects,
++                                GUINT_TO_POINTER (object_id));
++}
++
+ gboolean
+ meta_kms_impl_device_lease_objects (MetaKmsImplDevice  *impl_device,
+                                     GList              *connectors,
+@@ -403,6 +461,8 @@
+   *out_fd = retval;
+   *out_lessee_id = lessee_id;
+ 
++  track_leased_objects (impl_device, object_ids, n_object_ids, lessee_id);
++
+   return TRUE;
+ }
+ 
+@@ -423,6 +483,11 @@
+                                lessee_id);
+   meta_kms_impl_device_unhold_fd (impl_device);
+ 
++  /* Whether or not the ioctl succeeded, the lease is over: it is also revoked
++   * by the lessee closing the file descriptor, which is what a client that
++   * exited has already done. */
++  untrack_leased_objects (impl_device, lessee_id);
++
+   if (retval != 0)
+     {
+       g_set_error (error, G_IO_ERROR, g_io_error_from_errno (-retval),
+@@ -1193,6 +1258,7 @@
+   g_clear_list (&priv->crtcs, g_object_unref);
+   g_clear_list (&priv->connectors, g_object_unref);
+   g_clear_pointer (&priv->crtc_frames, g_hash_table_unref);
++  g_clear_pointer (&priv->leased_objects, g_hash_table_unref);
+ 
+   return META_KMS_RESOURCE_CHANGE_FULL;
+ }
+--- a/src/backends/native/meta-kms-impl-device-atomic.c
++++ b/src/backends/native/meta-kms-impl-device-atomic.c
+@@ -1067,6 +1067,10 @@
+     {
+       MetaKmsConnector *connector = l->data;
+ 
++      if (meta_kms_impl_device_is_object_leased (impl_device,
++                                                 meta_kms_connector_get_id (connector)))
++        continue;
++
+       if (!add_connector_property (impl_device,
+                                    connector, req,
+                                    META_KMS_CONNECTOR_PROP_CRTC_ID,
+@@ -1089,6 +1093,10 @@
+     {
+       MetaKmsPlane *plane = l->data;
+ 
++      if (meta_kms_impl_device_is_object_leased (impl_device,
++                                                 meta_kms_plane_get_id (plane)))
++        continue;
++
+       if (!add_plane_property (impl_device,
+                                plane, req,
+                                META_KMS_PLANE_PROP_CRTC_ID,
+@@ -1118,6 +1126,10 @@
+     {
+       MetaKmsCrtc *crtc = l->data;
+ 
++      if (meta_kms_impl_device_is_object_leased (impl_device,
++                                                 meta_kms_crtc_get_id (crtc)))
++        continue;
++
+       if (!add_crtc_property (impl_device,
+                               crtc, req,
+                               META_KMS_CRTC_PROP_ACTIVE,
